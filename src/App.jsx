@@ -19,10 +19,22 @@ const TEMPO_PADRAO = {
   contato_futuro: 15,
 };
 
+const CAMPOS_PADRAO = [
+  { id: "empresa",   label: "Empresa",   ativo: true,  fixo: false },
+  { id: "linkedin",  label: "LinkedIn",  ativo: true,  fixo: false },
+  { id: "instagram", label: "Instagram", ativo: false, fixo: false },
+  { id: "site",      label: "Site",      ativo: false, fixo: false },
+  { id: "telefone",  label: "Telefone",  ativo: true,  fixo: false },
+  { id: "email",     label: "Email",     ativo: true,  fixo: false },
+];
+
 const INITIAL = {
   bdrs: [{ id: "bdr1", nome: "BDR 1" }, { id: "bdr2", nome: "BDR 2" }],
   leads: [],
-  config: { tempos: { enriquecimento: 10, contato: 15, contato_futuro: 15 } },
+  config: {
+    tempos: { enriquecimento: 10, contato: 15, contato_futuro: 15 },
+    camposEnriquecimento: CAMPOS_PADRAO,
+  },
 };
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -292,11 +304,32 @@ function AdminBDRs({ state, save }) {
 
 function AdminConfig({ state, save }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
-  const [form, setForm] = useState(tempos);
+  const [formTempos, setFormTempos] = useState(tempos);
+  const campos = state.config?.camposEnriquecimento || CAMPOS_PADRAO;
+  const [novoCampo, setNovoCampo] = useState("");
 
-  const salvar = () => {
-    save({ ...state, config: { ...state.config, tempos: form } });
-    alert("Configurações salvas!");
+  const salvarTempos = () => {
+    save({ ...state, config: { ...state.config, tempos: formTempos } });
+    alert("Tempos salvos!");
+  };
+
+  const toggleCampo = (id) => {
+    const novos = campos.map((c) => c.id === id ? { ...c, ativo: !c.ativo } : c);
+    save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
+  };
+
+  const adicionarCampo = () => {
+    if (!novoCampo.trim()) return;
+    const id = novoCampo.trim().toLowerCase().replace(/\s+/g, "_");
+    if (campos.find((c) => c.id === id)) return;
+    const novos = [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false }];
+    save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
+    setNovoCampo("");
+  };
+
+  const removerCampo = (id) => {
+    const novos = campos.filter((c) => c.id !== id);
+    save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
   };
 
   const etapas = [
@@ -306,27 +339,80 @@ function AdminConfig({ state, save }) {
   ];
 
   return (
-    <div className="max-w-sm">
-      <h2 className="font-semibold text-gray-800 mb-1">Tempo por etapa</h2>
-      <p className="text-xs text-gray-400 mb-4">Defina quantos minutos o BDR tem para cada tipo de tarefa.</p>
-      <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
-        {etapas.map(({ key, label }) => (
-          <div key={key} className="flex items-center justify-between gap-4">
-            <label className="text-sm text-gray-700 flex-1">{label}</label>
-            <div className="flex items-center gap-2">
+    <div className="max-w-sm space-y-6">
+      {/* Tempos */}
+      <div>
+        <h2 className="font-semibold text-gray-800 mb-1">Tempo por etapa</h2>
+        <p className="text-xs text-gray-400 mb-3">Minutos que o BDR tem para cada tarefa.</p>
+        <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
+          {etapas.map(({ key, label }) => (
+            <div key={key} className="flex items-center justify-between gap-4">
+              <label className="text-sm text-gray-700 flex-1">{label}</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1} max={60}
+                  className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center"
+                  value={formTempos[key] || ""}
+                  onChange={(e) => setFormTempos({ ...formTempos, [key]: parseInt(e.target.value) || 1 })}
+                />
+                <span className="text-xs text-gray-400">min</span>
+              </div>
+            </div>
+          ))}
+          <button onClick={salvarTempos} className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700">
+            Salvar tempos
+          </button>
+        </div>
+      </div>
+
+      {/* Campos de Enriquecimento */}
+      <div>
+        <h2 className="font-semibold text-gray-800 mb-1">Campos de Enriquecimento</h2>
+        <p className="text-xs text-gray-400 mb-3">Selecione quais informações o BDR deve preencher ao enriquecer um lead.</p>
+        <div className="bg-white rounded-xl p-4 shadow-sm space-y-3">
+          {/* Campo fixo - Nome sempre aparece */}
+          <div className="flex items-center justify-between py-1 border-b border-gray-100 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1">
+                <div className="w-4 h-4 bg-white rounded-full" />
+              </div>
+              <span className="text-sm text-gray-700">Nome</span>
+            </div>
+            <span className="text-xs text-gray-400 italic">sempre ativo</span>
+          </div>
+
+          {/* Campos configuráveis */}
+          {campos.map((campo) => (
+            <div key={campo.id} className="flex items-center justify-between py-1">
+              <div className="flex items-center gap-3">
+                <button onClick={() => toggleCampo(campo.id)}
+                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo ? "bg-blue-600 justify-end" : "bg-gray-200 justify-start"}`}>
+                  <div className="w-4 h-4 bg-white rounded-full shadow" />
+                </button>
+                <span className={`text-sm ${campo.ativo ? "text-gray-800" : "text-gray-400"}`}>{campo.label}</span>
+              </div>
+              {!campo.fixo && (
+                <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
+              )}
+            </div>
+          ))}
+
+          {/* Adicionar campo personalizado */}
+          <div className="pt-3 border-t border-gray-100">
+            <p className="text-xs text-gray-500 mb-2 font-medium">Adicionar campo personalizado:</p>
+            <div className="flex gap-2">
               <input
-                type="number" min={1} max={60}
-                className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center"
-                value={form[key] || ""}
-                onChange={(e) => setForm({ ...form, [key]: parseInt(e.target.value) || 1 })}
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                placeholder="Ex: TikTok, Nome do decisor..."
+                value={novoCampo}
+                onChange={(e) => setNovoCampo(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && adicionarCampo()}
               />
-              <span className="text-xs text-gray-400">min</span>
+              <button onClick={adicionarCampo} className="bg-gray-800 text-white px-3 rounded-lg text-sm font-semibold hover:bg-gray-700">
+                +
+              </button>
             </div>
           </div>
-        ))}
-        <button onClick={salvar} className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 mt-2">
-          Salvar configurações
-        </button>
+        </div>
       </div>
     </div>
   );
@@ -567,17 +653,22 @@ function BDRTarefa({ lead, state, save }) {
         <p className="font-bold text-gray-900 mb-2">{titulo}</p>
         <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-3">{instrucao}</p>
 
-        {/* Campos de enriquecimento */}
+        {/* Campos de enriquecimento configurados pelo Admin */}
         {isEnriquecimento && (
           <div className="mt-3 space-y-2">
-            <p className="text-xs font-medium text-gray-700">Dados encontrados:</p>
-            {[["linkedin","LinkedIn"],["instagram","Instagram"],["site","Site"],["telefone","Telefone"],["email","Email"]].map(([f,l]) => (
-              <div key={f}>
-                <label className="text-xs text-gray-500 block mb-0.5">{l}</label>
-                <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                  value={enriqForm[f]} onChange={(e) => setEnriqForm({ ...enriqForm, [f]: e.target.value })} />
-              </div>
-            ))}
+            <p className="text-xs font-medium text-gray-700">Preencha os dados encontrados:</p>
+            {(state.config?.camposEnriquecimento || CAMPOS_PADRAO)
+              .filter((c) => c.ativo)
+              .map((campo) => (
+                <div key={campo.id}>
+                  <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
+                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                    value={enriqForm[campo.id] || ""}
+                    onChange={(e) => setEnriqForm({ ...enriqForm, [campo.id]: e.target.value })}
+                  />
+                </div>
+              ))
+            }
           </div>
         )}
 
