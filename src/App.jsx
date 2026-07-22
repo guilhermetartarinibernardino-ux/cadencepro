@@ -69,22 +69,14 @@ function leadsAtivosBDR(leads, bdrId) {
 
 function proximoLead(leads, bdrId) {
   const ativos = leadsAtivosBDR(leads, bdrId);
-  const amanha = new Date(); amanha.setDate(amanha.getDate() + 1); amanha.setHours(23,59,59);
 
-  // 1: contato futuro urgente (data <= amanhã)
-  const urgente = ativos
-    .filter((l) => l.coluna === "contato_futuro" && l.dataContatoFuturo)
-    .filter((l) => new Date(l.dataContatoFuturo) <= amanha)
-    .sort((a,b) => new Date(a.dataContatoFuturo) - new Date(b.dataContatoFuturo));
-  if (urgente.length) return urgente[0];
-
-  // 2: enriquecimento — mais antigo primeiro
+  // 1: enriquecimento — mais antigo primeiro
   const enrich = ativos
     .filter((l) => l.coluna === "enriquecimento")
     .sort((a,b) => (a.ultimaTentativa || a.dataCriacao).localeCompare(b.ultimaTentativa || b.dataCriacao));
   if (enrich.length) return enrich[0];
 
-  // 3: cadência de contato — mais antigo primeiro
+  // 2: cadência de contato — mais antigo primeiro (inclui retornos de contato futuro com data "0000...")
   const contato = ativos
     .filter((l) => l.coluna === "contato")
     .sort((a,b) => (a.ultimaTentativa || a.dataCriacao).localeCompare(b.ultimaTentativa || b.dataCriacao));
@@ -98,6 +90,28 @@ function verificarDescarte(leads) {
     if (!l.ativo || l.coluna !== "contato") return l;
     if (diasDesde(l.dataCriacao) >= DIAS_POR_LEAD)
       return { ...l, coluna: "nao_agendado", ativo: false };
+    return l;
+  });
+}
+
+function verificarRetornoContatoFuturo(leads) {
+  const agora = new Date();
+  return leads.map((l) => {
+    if (l.coluna !== "contato_futuro" || !l.dataContatoFuturo) return l;
+    // 1 dia antes da data agendada, às 23h50
+    const dataContato = new Date(l.dataContatoFuturo + "T00:00:00");
+    const dataRetorno = new Date(dataContato);
+    dataRetorno.setDate(dataRetorno.getDate() - 1);
+    dataRetorno.setHours(23, 50, 0, 0);
+    if (agora >= dataRetorno) {
+      return {
+        ...l,
+        coluna: "contato",
+        ativo: true,
+        // Data antiga garante prioridade máxima na fila
+        ultimaTentativa: "0000-01-01T00:00:00.000Z",
+      };
+    }
     return l;
   });
 }
@@ -335,7 +349,6 @@ function AdminConfig({ state, save }) {
   const etapas = [
     { key: "enriquecimento", label: "Enriquecimento de lead" },
     { key: "contato",        label: "Cadência de contato" },
-    { key: "contato_futuro", label: "Contato futuro" },
   ];
 
   return (
@@ -421,13 +434,14 @@ function AdminConfig({ state, save }) {
 // ─── BDR ─────────────────────────────────────────────────────────────────────
 function BDR({ bdrId, state, save, setView }) {
   const bdr = state.bdrs.find((b) => b.id === bdrId);
-  const leadsOk = verificarDescarte(state.leads);
+  const leadsComRetorno = verificarRetornoContatoFuturo(state.leads);
+  const leadsOk = verificarDescarte(leadsComRetorno);
   const ativos = leadsAtivosBDR(leadsOk, bdrId);
   const proximo = proximoLead(leadsOk, bdrId);
   const vagasLivres = MAX_LEADS - ativos.length;
 
   useEffect(() => {
-    const mudou = state.leads.some((l,i) => l.coluna !== leadsOk[i]?.coluna);
+    const mudou = state.leads.some((l,i) => l.coluna !== leadsOk[i]?.coluna || l.ativo !== leadsOk[i]?.ativo);
     if (mudou) save({ ...state, leads: leadsOk });
   }, []);
 
@@ -476,8 +490,9 @@ function BDR({ bdrId, state, save, setView }) {
 function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
   const coluna = lead?.coluna;
-  // Se não tem lead mas tem vagas, usa tempo de enriquecimento (cadastro + enriquecimento são a mesma atividade)
-  const totalSec = coluna ? (tempos[coluna] || 10) * 60 : vagasLivres > 0 ? (tempos.enriquecimento || 10) * 60 : 0;
+  // contato_futuro usa o mesmo tempo de contato
+  const colunaParaTempo = coluna === "contato_futuro" ? "contato" : coluna;
+  const totalSec = colunaParaTempo ? (tempos[colunaParaTempo] || 10) * 60 : vagasLivres > 0 ? (tempos.enriquecimento || 10) * 60 : 0;
 
   const [seg, setSeg] = useState(totalSec);
   const [expirou, setExpirou] = useState(false);
