@@ -40,6 +40,15 @@ const INITIAL = {
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).substr(2, 9); }
 
+function formatarDataHora() {
+  const agora = new Date();
+  const dia = String(agora.getDate()).padStart(2, "0");
+  const mes = String(agora.getMonth() + 1).padStart(2, "0");
+  const hora = String(agora.getHours()).padStart(2, "0");
+  const min = String(agora.getMinutes()).padStart(2, "0");
+  return `${dia}/${mes} ${hora}:${min}`;
+}
+
 function toUrl(val) {
   if (!val) return "";
   return val.startsWith("http://") || val.startsWith("https://") ? val : "https://" + val;
@@ -67,8 +76,8 @@ function leadsAtivosBDR(leads, bdrId) {
   );
 }
 
-function proximoLead(leads, bdrId) {
-  const ativos = leadsAtivosBDR(leads, bdrId);
+function proximoLead(leads, bdrId, excluirIds = new Set()) {
+  const ativos = leadsAtivosBDR(leads, bdrId).filter((l) => !excluirIds.has(l.id));
 
   // 1: enriquecimento — mais antigo primeiro
   const enrich = ativos
@@ -196,6 +205,7 @@ function Admin({ state, save, setView }) {
 
 function AdminKanban({ state, save }) {
   const getBDR = (id) => state.bdrs.find((b) => b.id === id);
+  const [confirmarDelete, setConfirmarDelete] = useState(null);
 
   const moverLead = (leadId, novaColuna) => {
     const novoLeads = state.leads.map((l) => {
@@ -206,8 +216,37 @@ function AdminKanban({ state, save }) {
     save({ ...state, leads: novoLeads });
   };
 
+  const deletarLead = (leadId) => {
+    save({ ...state, leads: state.leads.filter((l) => l.id !== leadId) });
+    setConfirmarDelete(null);
+  };
+
+  const leadParaDeletar = confirmarDelete ? state.leads.find((l) => l.id === confirmarDelete) : null;
+
   return (
     <div>
+      {/* Modal de confirmação de exclusão */}
+      {confirmarDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full">
+            <p className="font-bold text-gray-900 mb-1">Excluir lead?</p>
+            <p className="text-sm text-gray-500 mb-5">
+              Tem certeza que deseja excluir <strong>{leadParaDeletar?.nome}</strong>? Esta ação não pode ser desfeita.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmarDelete(null)}
+                className="flex-1 border border-gray-200 text-gray-600 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">
+                Cancelar
+              </button>
+              <button onClick={() => deletarLead(confirmarDelete)}
+                className="flex-1 bg-red-500 text-white py-2 rounded-xl text-sm font-bold hover:bg-red-600">
+                Sim, excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="overflow-x-auto">
         <div className="flex gap-3 min-w-max pb-4">
           {Object.entries(COLUNAS).map(([key, col]) => {
@@ -227,8 +266,16 @@ function AdminKanban({ state, save }) {
                       const urgente = key === "contato" && dias >= 2;
                       return (
                         <div key={lead.id} className={`bg-white rounded-lg p-3 shadow-sm border ${urgente ? "border-red-300" : "border-gray-100"}`}>
-                          <p className="text-xs font-semibold text-gray-800 truncate">{lead.nome}</p>
-                          <p className="text-xs text-gray-400 truncate">{lead.empresa}</p>
+                          <div className="flex items-start justify-between gap-1">
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-gray-800 truncate">{lead.nome}</p>
+                              <p className="text-xs text-gray-400 truncate">{lead.empresa}</p>
+                            </div>
+                            <button onClick={() => setConfirmarDelete(lead.id)}
+                              className="text-gray-300 hover:text-red-500 transition shrink-0 mt-0.5" title="Excluir lead">
+                              🗑️
+                            </button>
+                          </div>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-xs text-gray-400">{getBDR(lead.bdrId)?.nome}</span>
                             <span className={`text-xs font-medium ${urgente ? "text-red-500" : "text-gray-400"}`}>{dias}d</span>
@@ -437,8 +484,19 @@ function BDR({ bdrId, state, save, setView }) {
   const leadsComRetorno = verificarRetornoContatoFuturo(state.leads);
   const leadsOk = verificarDescarte(leadsComRetorno);
   const ativos = leadsAtivosBDR(leadsOk, bdrId);
-  const proximo = proximoLead(leadsOk, bdrId);
+  const [pausado, setPausado] = useState(false);
+  const [cicloIds, setCicloIds] = useState(new Set());
+
+  const proximo = proximoLead(leadsOk, bdrId, cicloIds);
   const vagasLivres = MAX_LEADS - ativos.length;
+
+  const onNaoAtendeu = (leadId) => {
+    setCicloIds((prev) => new Set([...prev, leadId]));
+  };
+
+  const onLeadCadastrado = () => {
+    setCicloIds(new Set());
+  };
 
   useEffect(() => {
     const mudou = state.leads.some((l,i) => l.coluna !== leadsOk[i]?.coluna || l.ativo !== leadsOk[i]?.ativo);
@@ -448,7 +506,7 @@ function BDR({ bdrId, state, save, setView }) {
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
       {/* Header fixo com timer */}
-      <BDRHeader bdr={bdr} lead={proximo} vagasLivres={vagasLivres} state={state} save={save} setView={setView} />
+      <BDRHeader bdr={bdr} lead={proximo} vagasLivres={vagasLivres} pausado={pausado} setPausado={setPausado} state={state} save={save} setView={setView} />
 
       {/* Espaço para compensar o header fixo */}
       <div className="h-14" />
@@ -471,14 +529,15 @@ function BDR({ bdrId, state, save, setView }) {
       </div>
 
       <div className="flex-1 max-w-lg mx-auto w-full p-4 space-y-3">
-        {vagasLivres > 0 && <BDRCadastrarLead bdrId={bdrId} state={state} save={save} />}
         {proximo ? (
-          <BDRTarefa key={proximo.id + proximo.coluna} lead={proximo} state={state} save={save} />
+          <BDRTarefa key={proximo.id + "-" + proximo.coluna + "-" + (proximo.tentativas || 0)} lead={proximo} state={state} save={save} onNaoAtendeu={onNaoAtendeu} />
+        ) : vagasLivres > 0 ? (
+          <BDRCadastrarLead key="cadastro-auto" bdrId={bdrId} state={state} save={save} iniciarAberto={true} onCadastrado={onLeadCadastrado} />
         ) : (
           <div className="bg-white rounded-xl p-6 shadow-sm text-center mt-4">
-            <div className="text-3xl mb-2">✅</div>
-            <p className="font-semibold text-gray-700 text-sm">Nenhuma tarefa pendente</p>
-            <p className="text-xs text-gray-400 mt-1">{vagasLivres > 0 ? "Cadastre novos leads para continuar." : "Todos os leads estão em cadência."}</p>
+            <div className="text-3xl mb-2">⏳</div>
+            <p className="font-semibold text-gray-700 text-sm">Todos os leads estão em cadência</p>
+            <p className="text-xs text-gray-400 mt-1">Aguarde o próximo ciclo ou peça ao Admin para adicionar novos leads.</p>
           </div>
         )}
       </div>
@@ -487,10 +546,9 @@ function BDR({ bdrId, state, save, setView }) {
 }
 
 // Header fixo com timer embutido
-function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
+function BDRHeader({ bdr, lead, vagasLivres, pausado, setPausado, state, save, setView }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
   const coluna = lead?.coluna;
-  // contato_futuro usa o mesmo tempo de contato
   const colunaParaTempo = coluna === "contato_futuro" ? "contato" : coluna;
   const totalSec = colunaParaTempo ? (tempos[colunaParaTempo] || 10) * 60 : vagasLivres > 0 ? (tempos.enriquecimento || 10) * 60 : 0;
 
@@ -503,7 +561,7 @@ function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
     setSeg(totalSec);
     setExpirou(false);
     if (ref.current) clearInterval(ref.current);
-    if (!lead) return;
+    if ((!lead && vagasLivres === 0) || pausado) return;
     ref.current = setInterval(() => {
       setSeg((s) => {
         if (s <= 1) {
@@ -515,7 +573,7 @@ function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
       });
     }, 1000);
     return () => clearInterval(ref.current);
-  }, [lead?.id, lead?.coluna, totalSec]);
+  }, [lead?.id, lead?.coluna, totalSec, pausado]);
 
   // Auto-avançar quando expira (só para enriquecimento)
   useEffect(() => {
@@ -532,7 +590,6 @@ function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
 
   const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   const quaseAcabou = seg < 60 && seg > 0;
-
   const mostrarTimer = lead || vagasLivres > 0;
 
   return (
@@ -543,105 +600,151 @@ function BDRHeader({ bdr, lead, vagasLivres, state, save, setView }) {
       </div>
       {mostrarTimer && (
         <div className={`font-mono font-bold text-lg px-3 py-1 rounded-lg ${
+          pausado ? "bg-gray-100 text-gray-400" :
           expirou ? "bg-red-100 text-red-600" :
           quaseAcabou ? "bg-orange-100 text-orange-600" :
           "bg-gray-100 text-gray-800"
         }`}>
-          {expirou ? "00:00" : fmt(seg)}
+          {pausado ? "⏸ " + fmt(seg) : expirou ? "00:00" : fmt(seg)}
         </div>
       )}
-      <button onClick={() => setView({ tela: "home" })} className="text-xs text-gray-400 hover:text-gray-700">Sair</button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setPausado((p) => !p)}
+          className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+            pausado ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }`}
+        >
+          {pausado ? "Retomar" : "Pausa"}
+        </button>
+        <button onClick={() => setView({ tela: "home" })} className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 font-medium">
+          Sair
+        </button>
+      </div>
     </div>
   );
 }
 
-function BDRCadastrarLead({ bdrId, state, save }) {
-  const [aberto, setAberto] = useState(false);
-  const empty = { nome: "", empresa: "", linkedin: "", instagram: "", site: "", telefone: "", email: "" };
+function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastrado }) {
+  const [aberto, setAberto] = useState(iniciarAberto);
+  const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter((c) => c.ativo);
+  const empty = { nome: "", ...Object.fromEntries(campos.map((c) => [c.id, ""])) };
   const [form, setForm] = useState(empty);
 
   const cadastrar = () => {
     if (!form.nome.trim()) return;
+    const obs = form.observacao?.trim() || "";
+    const historico = obs ? [{ texto: obs, dataHora: formatarDataHora() }] : [];
     const novoLead = {
       ...form, id: uid(), bdrId,
-      coluna: "enriquecimento",
+      coluna: "contato",
       dataCriacao: new Date().toISOString(),
       dataContatoFuturo: null,
-      observacao: "", tentativas: 0, ativo: true,
+      historico,
+      observacao: "",
+      tentativas: 0, ativo: true,
       ultimaTentativa: new Date().toISOString(),
     };
     save({ ...state, leads: [...state.leads, novoLead] });
-    setForm(empty); setAberto(false);
+    setForm(empty);
+    setAberto(false);
+    if (onCadastrado) onCadastrado();
   };
 
   if (!aberto) return (
     <button onClick={() => setAberto(true)}
       className="w-full bg-blue-50 border-2 border-dashed border-blue-300 text-blue-600 py-4 rounded-xl text-sm font-semibold hover:bg-blue-100 transition">
-      + Cadastrar novo lead
+      + Cadastrar e enriquecer novo lead
     </button>
   );
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm">
-      <p className="font-semibold text-gray-800 mb-3 text-sm">Novo Lead</p>
-      <div className="grid grid-cols-2 gap-2">
-        {[["nome","Nome *","col-span-2"],["empresa","Empresa",""],["linkedin","LinkedIn",""],
-          ["instagram","Instagram",""],["site","Site",""],["telefone","Telefone",""],["email","Email",""]].map(([f,l,span]) => (
-          <div key={f} className={span}>
-            <label className="text-xs text-gray-500 block mb-0.5">{l}</label>
+    <div className="bg-white rounded-xl p-4 shadow-sm pb-20">
+      <p className="font-semibold text-gray-800 mb-1 text-sm">Cadastro e Enriquecimento</p>
+      <p className="text-xs text-gray-400 mb-3">Preencha os dados do lead e as informações encontradas na pesquisa.</p>
+      <div className="space-y-2">
+        <div>
+          <label className="text-xs text-gray-500 block mb-0.5">Nome *</label>
+          <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
+        </div>
+        {campos.map((campo) => (
+          <div key={campo.id}>
+            <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
             <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-              value={form[f]} onChange={(e) => setForm({ ...form, [f]: e.target.value })} />
+              value={form[campo.id] || ""}
+              onChange={(e) => setForm({ ...form, [campo.id]: e.target.value })} />
           </div>
         ))}
+        <div>
+          <label className="text-xs text-gray-500 block mb-0.5">Observação</label>
+          <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-16 resize-none"
+            placeholder="Anotações sobre o lead..."
+            value={form.observacao || ""}
+            onChange={(e) => setForm({ ...form, observacao: e.target.value })} />
+        </div>
       </div>
-      <div className="flex gap-2 mt-3">
-        <button onClick={() => setAberto(false)} className="flex-1 border border-gray-200 text-gray-600 py-2 rounded-lg text-sm hover:bg-gray-50">Cancelar</button>
-        <button onClick={cadastrar} className="flex-1 bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700">Cadastrar</button>
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg flex gap-3">
+        <button onClick={() => setAberto(false)} className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">
+          Cancelar
+        </button>
+        <button onClick={cadastrar} className="flex-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:bg-blue-700">
+          Finalizar cadastro →
+        </button>
       </div>
     </div>
   );
 }
 
-function BDRTarefa({ lead, state, save }) {
+function BDRTarefa({ lead, state, save, onNaoAtendeu }) {
   const [obs, setObs] = useState("");
   const [dataFuturo, setDataFuturo] = useState("");
-  const [enriqForm, setEnriqForm] = useState({
-    linkedin: lead.linkedin || "", instagram: lead.instagram || "",
-    site: lead.site || "", telefone: lead.telefone || "", email: lead.email || "",
-  });
+  const [feedback, setFeedback] = useState(null);
 
   const atualizarLead = (updates) => {
     const novoLeads = state.leads.map((l) => l.id === lead.id ? { ...l, ...updates } : l);
     save({ ...state, leads: novoLeads });
   };
 
-  const concluirEnriquecimento = () => {
-    atualizarLead({ ...enriqForm, coluna: "contato", observacao: obs, ultimaTentativa: new Date().toISOString() });
+  const adicionarHistorico = (texto) => {
+    if (!texto.trim()) return [];
+    const entrada = { texto: texto.trim(), dataHora: formatarDataHora() };
+    return [...(lead.historico || []), entrada];
   };
 
   const registrarResultado = (resultado) => {
-    if (resultado === "agendado")         atualizarLead({ coluna: "agendado",       ativo: false, observacao: obs });
-    else if (resultado === "nao_agendado") atualizarLead({ coluna: "nao_agendado",   ativo: false, observacao: obs });
-    else if (resultado === "contato_futuro" && dataFuturo)
-      atualizarLead({ coluna: "contato_futuro", ativo: false, dataContatoFuturo: dataFuturo, observacao: obs });
-    else if (resultado === "nao_atendeu")
-      atualizarLead({ tentativas: (lead.tentativas || 0) + 1, observacao: obs, ultimaTentativa: new Date().toISOString() });
+    const hist = adicionarHistorico(obs);
+    if (resultado === "agendado") {
+      atualizarLead({ coluna: "agendado", ativo: false, historico: hist });
+    } else if (resultado === "nao_agendado") {
+      atualizarLead({ coluna: "nao_agendado", ativo: false, historico: hist });
+    } else if (resultado === "contato_futuro" && dataFuturo) {
+      atualizarLead({ coluna: "contato_futuro", ativo: false, dataContatoFuturo: dataFuturo, historico: hist });
+    } else if (resultado === "nao_atendeu") {
+      setFeedback("✓ Tentativa registrada");
+      setTimeout(() => setFeedback(null), 1500);
+      atualizarLead({ tentativas: (lead.tentativas || 0) + 1, historico: hist, ultimaTentativa: new Date().toISOString() });
+      onNaoAtendeu(lead.id);
+    }
   };
 
-  const isEnriquecimento = lead.coluna === "enriquecimento";
   const isContato = lead.coluna === "contato" || lead.coluna === "contato_futuro";
-  const instrucao = isEnriquecimento
-    ? "Pesquise este lead no LinkedIn, Instagram e site da empresa. Preencha os dados encontrados abaixo e clique em Atividade Finalizada."
-    : lead.coluna === "contato_futuro"
+  const instrucao = lead.coluna === "contato_futuro"
     ? "Este lead solicitou contato nesta data. Entre em contato agora e registre o resultado."
-    : "Entre em contato com este lead pelo canal mais adequado. Quando o timer zerar, registre o resultado.";
-
-  const titulo = isEnriquecimento ? "Pesquisa e Enriquecimento"
-    : lead.coluna === "contato_futuro" ? "Contato Futuro — PRIORIDADE"
-    : "Tentativa de Contato";
+    : "Entre em contato com este lead pelo canal mais adequado. Registre o resultado usando os botões abaixo.";
+  const titulo = lead.coluna === "contato_futuro" ? "Contato Futuro — PRIORIDADE" : "Tentativa de Contato";
 
   return (
     <div className="space-y-3 pb-20">
+      {/* Feedback de tentativa registrada */}
+      {feedback && (
+        <div className="fixed top-16 left-0 right-0 z-40 flex justify-center">
+          <div className="bg-gray-900 text-white text-sm font-medium px-5 py-2 rounded-full shadow-lg">
+            {feedback}
+          </div>
+        </div>
+      )}
+
       {/* Lead info */}
       <div className="bg-white rounded-xl p-4 shadow-sm">
         {lead.coluna === "contato_futuro" && (
@@ -668,26 +771,21 @@ function BDRTarefa({ lead, state, save }) {
         <p className="font-bold text-gray-900 mb-2">{titulo}</p>
         <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-3">{instrucao}</p>
 
-        {/* Campos de enriquecimento configurados pelo Admin */}
-        {isEnriquecimento && (
-          <div className="mt-3 space-y-2">
-            <p className="text-xs font-medium text-gray-700">Preencha os dados encontrados:</p>
-            {(state.config?.camposEnriquecimento || CAMPOS_PADRAO)
-              .filter((c) => c.ativo)
-              .map((campo) => (
-                <div key={campo.id}>
-                  <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
-                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-                    value={enriqForm[campo.id] || ""}
-                    onChange={(e) => setEnriqForm({ ...enriqForm, [campo.id]: e.target.value })}
-                  />
-                </div>
-              ))
-            }
+        {/* Histórico de observações */}
+        {lead.historico && lead.historico.length > 0 && (
+          <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg p-3">
+            <p className="text-xs text-amber-700 font-medium mb-2">📋 Histórico:</p>
+            <div className="space-y-1.5">
+              {lead.historico.map((item, i) => (
+                <p key={i} className="text-xs text-amber-800">
+                  <span className="font-medium">{i + 1}ª</span> {item.texto}
+                  <span className="text-amber-500 ml-1">({item.dataHora})</span>
+                </p>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Observação */}
         <div className="mt-3">
           <label className="text-xs text-gray-500 block mb-1">Observação</label>
           <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-14 resize-none"
@@ -727,12 +825,12 @@ function BDRTarefa({ lead, state, save }) {
         </div>
       )}
 
-      {/* Botão fixo inferior — só para enriquecimento */}
-      {isEnriquecimento && (
+      {/* Botão fixo inferior — pular para próxima tarefa */}
+      {isContato && (
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg">
-          <button onClick={concluirEnriquecimento}
-            className="w-full max-w-lg mx-auto block bg-blue-600 text-white py-4 rounded-xl font-bold text-base hover:bg-blue-700 transition">
-            Atividade Finalizada →
+          <button onClick={() => registrarResultado("nao_atendeu")}
+            className="w-full max-w-lg mx-auto block border-2 border-gray-200 text-gray-500 py-3 rounded-xl font-medium text-sm hover:bg-gray-50 transition">
+            Pular para a próxima tarefa →
           </button>
         </div>
       )}
