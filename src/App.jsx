@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const STORAGE_KEY = "cadencepro-v9";
+const STORAGE_KEY = "cadencepro-v10";
 const MAX_LEADS = 20;
 const DIAS_POR_LEAD = 3;
 
@@ -25,13 +24,15 @@ const CAMPOS_PADRAO = [
 ];
 
 const INITIAL = {
-  bdrs: [{ id: "bdr1", nome: "BDR 1", tempoPausadoMs: 0 }, { id: "bdr2", nome: "BDR 2", tempoPausadoMs: 0 }],
+  bdrs: [
+    { id: "bdr1", nome: "BDR 1", tempoPausadoMs: 0 },
+    { id: "bdr2", nome: "BDR 2", tempoPausadoMs: 0 },
+  ],
   leads: [],
   acoes: [],
   config: { tempos: TEMPO_PADRAO, camposEnriquecimento: CAMPOS_PADRAO },
 };
 
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).substr(2, 9); }
 
 function toUrl(val) {
@@ -55,20 +56,17 @@ function diasDesde(iso) {
 }
 
 function formatarDataHora() {
-  const agora = new Date();
-  return `${String(agora.getDate()).padStart(2,"0")}/${String(agora.getMonth()+1).padStart(2,"0")} ${String(agora.getHours()).padStart(2,"0")}:${String(agora.getMinutes()).padStart(2,"0")}`;
+  const a = new Date();
+  return `${String(a.getDate()).padStart(2,"0")}/${String(a.getMonth()+1).padStart(2,"0")} ${String(a.getHours()).padStart(2,"0")}:${String(a.getMinutes()).padStart(2,"0")}`;
 }
 
-function dataISO(iso) {
-  return iso ? iso.split("T")[0] : "";
-}
+function dataISO(iso) { return iso ? iso.split("T")[0] : ""; }
 
 function formatarTempo(ms) {
   if (!ms) return "0min";
   const min = Math.floor(ms / 60000);
   const h = Math.floor(min / 60);
-  const m = min % 60;
-  return h > 0 ? `${h}h ${m}min` : `${m}min`;
+  return h > 0 ? `${h}h ${min % 60}min` : `${min}min`;
 }
 
 function leadsAtivosBDR(leads, bdrId) {
@@ -77,19 +75,27 @@ function leadsAtivosBDR(leads, bdrId) {
 
 function proximoLead(leads, bdrId, excluirIds = new Set()) {
   const ativos = leadsAtivosBDR(leads, bdrId).filter(l => !excluirIds.has(l.id));
-  const enrich = ativos.filter(l => l.coluna === "enriquecimento")
+
+  // Prioridade máxima: leads incompletos (timer zerou no cadastro)
+  const incompletos = ativos.filter(l => l.incompleto);
+  if (incompletos.length) return incompletos[0];
+
+  const enrich = ativos.filter(l => l.coluna === "enriquecimento" && !l.incompleto)
     .sort((a,b) => (a.ultimaTentativa||a.dataCriacao).localeCompare(b.ultimaTentativa||b.dataCriacao));
   if (enrich.length) return enrich[0];
+
   const contato = ativos.filter(l => l.coluna === "contato")
     .sort((a,b) => (a.ultimaTentativa||a.dataCriacao).localeCompare(b.ultimaTentativa||b.dataCriacao));
   if (contato.length) return contato[0];
+
   return null;
 }
 
 function verificarDescarte(leads) {
   return leads.map(l => {
     if (!l.ativo || l.coluna !== "contato") return l;
-    if (diasDesde(l.dataCriacao) >= DIAS_POR_LEAD) return { ...l, coluna: "nao_agendado", ativo: false, dataMovimentacao: new Date().toISOString() };
+    if (diasDesde(l.dataCriacao) >= DIAS_POR_LEAD)
+      return { ...l, coluna: "nao_agendado", ativo: false, dataMovimentacao: new Date().toISOString() };
     return l;
   });
 }
@@ -101,7 +107,8 @@ function verificarRetornoContatoFuturo(leads) {
     const dataRetorno = new Date(l.dataContatoFuturo + "T00:00:00");
     dataRetorno.setDate(dataRetorno.getDate() - 1);
     dataRetorno.setHours(23, 50, 0, 0);
-    if (agora >= dataRetorno) return { ...l, coluna: "contato", ativo: true, ultimaTentativa: "0000-01-01T00:00:00.000Z", dataMovimentacao: new Date().toISOString() };
+    if (agora >= dataRetorno)
+      return { ...l, coluna: "contato", ativo: true, ultimaTentativa: "0000-01-01T00:00:00.000Z", dataMovimentacao: new Date().toISOString() };
     return l;
   });
 }
@@ -113,6 +120,14 @@ function downloadCSV(rows, filename) {
   const a = document.createElement("a");
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+}
+
+function dentroDoRange(iso, inicio, fim) {
+  if (!iso) return false;
+  const data = dataISO(iso);
+  if (inicio && data < inicio) return false;
+  if (fim && data > fim) return false;
+  return true;
 }
 
 // ─── HOME ────────────────────────────────────────────────────────────────────
@@ -188,12 +203,17 @@ function Admin({ state, save, setView }) {
 
 function AdminKanban({ state, save }) {
   const hoje = new Date().toISOString().split("T")[0];
-  const [filtroData, setFiltroData] = useState(hoje);
+  const [dataInicio, setDataInicio] = useState(hoje);
+  const [dataFim, setDataFim] = useState(hoje);
   const [confirmarDelete, setConfirmarDelete] = useState(null);
   const getBDR = id => state.bdrs.find(b => b.id === id);
 
-  const leadsFiltrados = filtroData
-    ? state.leads.filter(l => dataISO(l.dataCriacao) === filtroData || dataISO(l.dataMovimentacao) === filtroData)
+  const temFiltro = dataInicio || dataFim;
+  const leadsFiltrados = temFiltro
+    ? state.leads.filter(l =>
+        dentroDoRange(l.dataCriacao, dataInicio, dataFim) ||
+        dentroDoRange(l.dataMovimentacao, dataInicio, dataFim)
+      )
     : state.leads;
 
   const moverLead = (leadId, novaColuna) => {
@@ -213,26 +233,26 @@ function AdminKanban({ state, save }) {
   const handleDownload = () => {
     const header = ["Nome", "Empresa", "Etapa", "BDR", "Data Criação", "Última Movimentação"];
     const rows = leadsFiltrados.map(l => [
-      l.nome, l.empresa || "", COLUNAS[l.coluna]?.label || l.coluna,
-      getBDR(l.bdrId)?.nome || "", dataISO(l.dataCriacao), dataISO(l.dataMovimentacao) || ""
+      l.nome, l.empresa||"", COLUNAS[l.coluna]?.label||l.coluna,
+      getBDR(l.bdrId)?.nome||"", dataISO(l.dataCriacao), dataISO(l.dataMovimentacao)||""
     ]);
-    downloadCSV([header, ...rows], `kanban-${filtroData || "todos"}.csv`);
+    const label = dataInicio === dataFim ? dataInicio : `${dataInicio}_a_${dataFim}`;
+    downloadCSV([header, ...rows], `kanban-${label||"todos"}.csv`);
   };
 
-  // Estatísticas por BDR com filtro
-  const acoesFiltradas = filtroData
-    ? (state.acoes || []).filter(a => dataISO(a.dataHora) === filtroData)
-    : (state.acoes || []);
+  const acoesFiltradas = temFiltro
+    ? (state.acoes||[]).filter(a => dentroDoRange(a.dataHora, dataInicio, dataFim))
+    : (state.acoes||[]);
 
   const estatsBDR = state.bdrs.map(bdr => {
-    const acoesBDR = acoesFiltradas.filter(a => a.bdrId === bdr.id);
+    const ab = acoesFiltradas.filter(a => a.bdrId === bdr.id);
     return {
       ...bdr,
-      agendou: acoesBDR.filter(a => a.tipo === "agendado").length,
-      etapaRealizada: acoesBDR.filter(a => a.tipo === "etapa_realizada").length,
-      pulou: acoesBDR.filter(a => a.tipo === "pulou").length,
-      contatoFuturo: acoesBDR.filter(a => a.tipo === "contato_futuro").length,
-      semInteresse: acoesBDR.filter(a => a.tipo === "sem_interesse").length,
+      agendou:        ab.filter(a => a.tipo === "agendado").length,
+      etapaRealizada: ab.filter(a => a.tipo === "etapa_realizada").length,
+      pulou:          ab.filter(a => a.tipo === "pulou").length,
+      contatoFuturo:  ab.filter(a => a.tipo === "contato_futuro").length,
+      tempoEsgotado:  ab.filter(a => a.tipo === "tempo_esgotado").length,
     };
   });
 
@@ -240,7 +260,6 @@ function AdminKanban({ state, save }) {
 
   return (
     <div>
-      {/* Modal de confirmação */}
       {confirmarDelete && (
         <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full">
@@ -254,13 +273,16 @@ function AdminKanban({ state, save }) {
         </div>
       )}
 
-      {/* Filtro e Download */}
+      {/* Filtro range + Download */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="flex items-center gap-2 bg-white rounded-xl px-4 py-2 shadow-sm border border-gray-100">
-          <label className="text-xs text-gray-500">Filtrar por data:</label>
-          <input type="date" value={filtroData} onChange={e => setFiltroData(e.target.value)}
+          <label className="text-xs text-gray-500 shrink-0">De:</label>
+          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)}
             className="border-0 text-sm text-gray-700 focus:outline-none" />
-          {filtroData && <button onClick={() => setFiltroData("")} className="text-xs text-gray-400 hover:text-gray-600 ml-1">✕</button>}
+          <label className="text-xs text-gray-500 shrink-0 ml-2">Até:</label>
+          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)}
+            className="border-0 text-sm text-gray-700 focus:outline-none" />
+          <button onClick={() => { setDataInicio(""); setDataFim(""); }} className="text-xs text-gray-400 hover:text-gray-600 ml-1">✕</button>
         </div>
         <button onClick={handleDownload}
           className="bg-gray-800 text-white text-xs px-4 py-2 rounded-xl hover:bg-gray-700 font-medium">
@@ -293,7 +315,7 @@ function AdminKanban({ state, save }) {
                               <p className="text-xs font-semibold text-gray-800 truncate">{lead.nome}</p>
                               <p className="text-xs text-gray-400 truncate">{lead.empresa}</p>
                             </div>
-                            <button onClick={() => setConfirmarDelete(lead.id)} className="text-gray-300 hover:text-red-500 transition shrink-0" title="Excluir">🗑️</button>
+                            <button onClick={() => setConfirmarDelete(lead.id)} className="text-gray-300 hover:text-red-500 transition shrink-0">🗑️</button>
                           </div>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-xs text-gray-400">{getBDR(lead.bdrId)?.nome}</span>
@@ -318,7 +340,7 @@ function AdminKanban({ state, save }) {
       {/* Resumo por BDR */}
       <div className="mt-5">
         <p className="text-sm font-semibold text-gray-700 mb-3">
-          Resumo por BDR {filtroData ? `— ${new Date(filtroData+"T12:00:00").toLocaleDateString("pt-BR")}` : ""}
+          Resumo por BDR {dataInicio || dataFim ? `— ${dataInicio||"..."} até ${dataFim||"..."}` : ""}
         </p>
         <div className="grid grid-cols-1 gap-3 max-w-2xl">
           {estatsBDR.map(bdr => {
@@ -329,7 +351,7 @@ function AdminKanban({ state, save }) {
                   <p className="font-semibold text-gray-800 text-sm">{bdr.nome}</p>
                   <span className="text-xs text-gray-400">Pausa: {formatarTempo(bdr.tempoPausadoMs)}</span>
                 </div>
-                <div className="mb-2">
+                <div className="mb-3">
                   <div className="flex justify-between text-xs text-gray-500 mb-1">
                     <span>Leads ativos</span>
                     <span className="font-bold text-gray-800">{ativos}/{MAX_LEADS}</span>
@@ -339,12 +361,18 @@ function AdminKanban({ state, save }) {
                       style={{width:`${(ativos/MAX_LEADS)*100}%`}} />
                   </div>
                 </div>
-                <div className="grid grid-cols-4 gap-2 mt-3">
-                  {[["✅","Agendou",bdr.agendou,"green"],["✓","Et. realiz.",bdr.etapaRealizada,"yellow"],["⏭","Pulou",bdr.pulou,"gray"],["📅","Cont. fut.",bdr.contatoFuturo,"purple"]].map(([icon,label,val,cor])=>(
-                    <div key={label} className={`text-center bg-${cor}-50 rounded-lg py-2`}>
-                      <p className="text-lg">{icon}</p>
-                      <p className="text-lg font-bold text-gray-800">{val}</p>
-                      <p className="text-xs text-gray-400">{label}</p>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[
+                    ["✅","Agendou",bdr.agendou,"bg-green-50"],
+                    ["✓","Realizada",bdr.etapaRealizada,"bg-yellow-50"],
+                    ["⏭","Pulou",bdr.pulou,"bg-gray-50"],
+                    ["📅","Cont. fut.",bdr.contatoFuturo,"bg-purple-50"],
+                    ["⏱","T. esgot.",bdr.tempoEsgotado,"bg-red-50"],
+                  ].map(([icon,label,val,bg])=>(
+                    <div key={label} className={`text-center ${bg} rounded-lg py-2 px-1`}>
+                      <p className="text-base">{icon}</p>
+                      <p className="text-sm font-bold text-gray-800">{val}</p>
+                      <p className="text-xs text-gray-400 leading-tight">{label}</p>
                     </div>
                   ))}
                 </div>
@@ -364,13 +392,13 @@ function AdminBDRs({ state, save }) {
     save({ ...state, bdrs: [...state.bdrs, { id: uid(), nome: nome.trim(), tempoPausadoMs: 0 }] });
     setNome("");
   };
-  const removeBDR = id => save({ ...state, bdrs: state.bdrs.filter(b => b.id !== id), leads: state.leads.filter(l => l.bdrId !== id) });
+  const removeBDR = id => save({ ...state, bdrs: state.bdrs.filter(b=>b.id!==id), leads: state.leads.filter(l=>l.bdrId!==id) });
   return (
     <div className="max-w-md">
       <h2 className="font-semibold text-gray-800 mb-3">Adicionar BDR</h2>
       <div className="bg-white rounded-xl p-4 shadow-sm mb-5 flex gap-3">
         <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="Nome do BDR"
-          value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => e.key==="Enter"&&addBDR()} />
+          value={nome} onChange={e=>setNome(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addBDR()} />
         <button onClick={addBDR} className="bg-blue-600 text-white px-4 rounded-lg text-sm font-semibold hover:bg-blue-700">Adicionar</button>
       </div>
       <div className="space-y-2">
@@ -380,7 +408,7 @@ function AdminBDRs({ state, save }) {
               <p className="font-medium text-gray-800 text-sm">{bdr.nome}</p>
               <p className="text-xs text-gray-400">{leadsAtivosBDR(state.leads, bdr.id).length} leads ativos</p>
             </div>
-            <button onClick={() => removeBDR(bdr.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
+            <button onClick={()=>removeBDR(bdr.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
           </div>
         ))}
       </div>
@@ -406,33 +434,30 @@ function AdminConfig({ state, save }) {
 
   const adicionarCampo = () => {
     if (!novoCampo.trim()) return;
-    const id = novoCampo.trim().toLowerCase().replace(/\s+/g, "_");
-    if (campos.find(c => c.id === id)) return;
+    const id = novoCampo.trim().toLowerCase().replace(/\s+/g,"_");
+    if (campos.find(c=>c.id===id)) return;
     const novos = [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false, obrigatorio: false }];
     save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
     setNovoCampo("");
   };
 
   const removerCampo = id => {
-    const novos = campos.filter(c => c.id !== id);
-    save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
+    save({ ...state, config: { ...state.config, camposEnriquecimento: campos.filter(c=>c.id!==id) } });
   };
 
   return (
     <div className="max-w-sm space-y-6">
-      {/* Tempos */}
       <div>
         <h2 className="font-semibold text-gray-800 mb-1">Tempo por etapa</h2>
         <p className="text-xs text-gray-400 mb-3">Minutos que o BDR tem para cada tarefa.</p>
         <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
-          {[["enriquecimento","Enriquecimento de lead"],["contato","Cadência de contato"]].map(([key,label]) => (
+          {[["enriquecimento","Enriquecimento de lead"],["contato","Cadência de contato"]].map(([key,label])=>(
             <div key={key} className="flex items-center justify-between gap-4">
               <label className="text-sm text-gray-700 flex-1">{label}</label>
               <div className="flex items-center gap-2">
                 <input type="number" min={1} max={60}
                   className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center"
-                  value={formTempos[key]||""}
-                  onChange={e => setFormTempos({...formTempos,[key]:parseInt(e.target.value)||1})} />
+                  value={formTempos[key]||""} onChange={e=>setFormTempos({...formTempos,[key]:parseInt(e.target.value)||1})} />
                 <span className="text-xs text-gray-400">min</span>
               </div>
             </div>
@@ -441,45 +466,52 @@ function AdminConfig({ state, save }) {
         </div>
       </div>
 
-      {/* Campos de Enriquecimento */}
       <div>
         <h2 className="font-semibold text-gray-800 mb-1">Campos de Enriquecimento</h2>
         <p className="text-xs text-gray-400 mb-3">Ative os campos e defina quais são obrigatórios.</p>
         <div className="bg-white rounded-xl p-4 shadow-sm">
-          {/* Header */}
-          <div className="flex items-center justify-between text-xs text-gray-400 mb-3 pb-2 border-b border-gray-100">
-            <span>Campo</span>
-            <div className="flex gap-4">
-              <span>Ativo</span>
-              <span>Obrigatório</span>
-            </div>
+          {/* Cabeçalho */}
+          <div className="flex items-center mb-3 pb-2 border-b border-gray-100">
+            <span className="text-xs text-gray-400 flex-1">Campo</span>
+            <span className="text-xs text-gray-400 w-16 text-center">Ativo</span>
+            <span className="text-xs text-gray-400 w-24 text-center">Obrigatório</span>
+            <span className="w-8" />
           </div>
 
-          {/* Nome — sempre ativo */}
-          <div className="flex items-center justify-between py-2 border-b border-gray-50">
-            <span className="text-sm text-gray-700">Nome</span>
-            <div className="flex gap-6 items-center">
-              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1"><div className="w-4 h-4 bg-white rounded-full" /></div>
-              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1"><div className="w-4 h-4 bg-white rounded-full" /></div>
+          {/* Nome — sempre ativo e obrigatório */}
+          <div className="flex items-center py-2 border-b border-gray-50">
+            <span className="text-sm text-gray-700 flex-1">Nome</span>
+            <div className="w-16 flex justify-center">
+              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1 cursor-not-allowed opacity-70">
+                <div className="w-4 h-4 bg-white rounded-full" />
+              </div>
             </div>
+            <div className="w-24 flex justify-center">
+              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1 cursor-not-allowed opacity-70">
+                <div className="w-4 h-4 bg-white rounded-full" />
+              </div>
+            </div>
+            <span className="w-8" />
           </div>
 
           {campos.map(campo => (
-            <div key={campo.id} className="flex items-center justify-between py-2 border-b border-gray-50">
-              <span className={`text-sm ${campo.ativo?"text-gray-800":"text-gray-400"}`}>{campo.label}</span>
-              <div className="flex gap-4 items-center">
-                {/* Toggle Ativo */}
+            <div key={campo.id} className="flex items-center py-2 border-b border-gray-50">
+              <span className={`text-sm flex-1 ${campo.ativo?"text-gray-800":"text-gray-400"}`}>{campo.label}</span>
+              <div className="w-16 flex justify-center">
                 <button onClick={() => toggleCampo(campo.id, "ativo")}
                   className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo?"bg-blue-600 justify-end":"bg-gray-200 justify-start"}`}>
                   <div className="w-4 h-4 bg-white rounded-full shadow" />
                 </button>
-                {/* Toggle Obrigatório */}
+              </div>
+              <div className="w-24 flex justify-center">
                 <button onClick={() => campo.ativo && toggleCampo(campo.id, "obrigatorio")}
                   className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${!campo.ativo?"opacity-30 cursor-not-allowed":""} ${campo.obrigatorio&&campo.ativo?"bg-red-500 justify-end":"bg-gray-200 justify-start"}`}>
                   <div className="w-4 h-4 bg-white rounded-full shadow" />
                 </button>
+              </div>
+              <div className="w-8 flex justify-center">
                 {!campo.fixo && (
-                  <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600 ml-1">✕</button>
+                  <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600">✕</button>
                 )}
               </div>
             </div>
@@ -490,8 +522,8 @@ function AdminConfig({ state, save }) {
             <div className="flex gap-2">
               <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
                 placeholder="Ex: TikTok, Nome do decisor..."
-                value={novoCampo} onChange={e => setNovoCampo(e.target.value)}
-                onKeyDown={e => e.key==="Enter"&&adicionarCampo()} />
+                value={novoCampo} onChange={e=>setNovoCampo(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&adicionarCampo()} />
               <button onClick={adicionarCampo} className="bg-gray-800 text-white px-3 rounded-lg text-sm font-semibold hover:bg-gray-700">+</button>
             </div>
           </div>
@@ -507,17 +539,44 @@ function BDR({ bdrId, state, save, setView }) {
   const leadsComRetorno = verificarRetornoContatoFuturo(state.leads);
   const leadsOk = verificarDescarte(leadsComRetorno);
   const ativos = leadsAtivosBDR(leadsOk, bdrId);
-  const [pausado, setPausado] = useState(false);
   const [cicloIds, setCicloIds] = useState(new Set());
   const proximo = proximoLead(leadsOk, bdrId, cicloIds);
   const vagasLivres = MAX_LEADS - ativos.length;
 
+  // Controle de salvar automaticamente o formulário quando timer zera
+  const [salvarAutoCount, setSalvarAutoCount] = useState(0);
+  const dadosFormRef = useRef({});
+
   const onNaoAtendeu = leadId => setCicloIds(prev => new Set([...prev, leadId]));
   const onLeadCadastrado = () => setCicloIds(new Set());
 
-  const registrarAcao = (tipo, leadId) => {
+  const registrarAcao = useCallback((tipo, leadId, leadsAtualizado) => {
     const novaAcao = { id: uid(), bdrId, tipo, leadId, dataHora: new Date().toISOString() };
-    save({ ...state, leads: leadsOk, acoes: [...(state.acoes||[]), novaAcao] });
+    const baseLeads = leadsAtualizado || leadsOk;
+    save({ ...state, leads: baseLeads, acoes: [...(state.acoes||[]), novaAcao] });
+  }, [state, bdrId, leadsOk]);
+
+  // Timer zerou na cadência de contato — auto-avança
+  const onTimerZerouContato = useCallback((lead) => {
+    const hist = [...(lead.historico||[]), { texto: "Timer esgotado", dataHora: formatarDataHora() }];
+    const novoLeads = leadsOk.map(l =>
+      l.id === lead.id ? { ...l, tentativas: (l.tentativas||0)+1, historico: hist, ultimaTentativa: new Date().toISOString() } : l
+    );
+    const novaAcao = { id: uid(), bdrId, tipo: "tempo_esgotado", leadId: lead.id, dataHora: new Date().toISOString() };
+    save({ ...state, leads: novoLeads, acoes: [...(state.acoes||[]), novaAcao] });
+    onNaoAtendeu(lead.id);
+  }, [state, bdrId, leadsOk]);
+
+  // Timer zerou no cadastro — salva dados parciais
+  const onTimerZerouCadastro = useCallback(() => {
+    setSalvarAutoCount(c => c + 1);
+  }, []);
+
+  const onPausaChange = (pausando, durMs) => {
+    if (!pausando && durMs > 0) {
+      const novosBdrs = state.bdrs.map(b => b.id === bdrId ? { ...b, tempoPausadoMs: (b.tempoPausadoMs||0) + durMs } : b);
+      save({ ...state, bdrs: novosBdrs });
+    }
   };
 
   useEffect(() => {
@@ -525,20 +584,17 @@ function BDR({ bdrId, state, save, setView }) {
     if (mudou) save({ ...state, leads: leadsOk });
   }, []);
 
-  const onPausaChange = (pausando, durMs) => {
-    setPausado(pausando);
-    if (!pausando && durMs > 0) {
-      const novosBdrs = state.bdrs.map(b => b.id === bdrId ? { ...b, tempoPausadoMs: (b.tempoPausadoMs||0) + durMs } : b);
-      save({ ...state, bdrs: novosBdrs });
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      <BDRHeader bdr={bdr} lead={proximo} vagasLivres={vagasLivres} onPausaChange={onPausaChange} state={state} save={save} setView={setView} />
+      <BDRHeader
+        bdr={bdr} lead={proximo} vagasLivres={vagasLivres}
+        onPausaChange={onPausaChange}
+        onTimerZerouContato={onTimerZerouContato}
+        onTimerZerouCadastro={onTimerZerouCadastro}
+        state={state} save={save} setView={setView}
+      />
       <div className="h-14" />
 
-      {/* Barra de leads */}
       <div className="bg-white border-b px-5 py-3">
         <div className="flex justify-between text-xs text-gray-500 mb-1">
           <span>Leads no radar</span>
@@ -552,10 +608,17 @@ function BDR({ bdrId, state, save, setView }) {
 
       <div className="flex-1 max-w-lg mx-auto w-full p-4 space-y-3">
         {proximo ? (
-          <BDRTarefa key={proximo.id+"-"+proximo.coluna+"-"+(proximo.tentativas||0)}
-            lead={proximo} state={state} save={save} onNaoAtendeu={onNaoAtendeu} registrarAcao={registrarAcao} />
+          <BDRTarefa
+            key={proximo.id+"-"+proximo.coluna+"-"+(proximo.tentativas||0)}
+            lead={proximo} state={state} save={save}
+            onNaoAtendeu={onNaoAtendeu} registrarAcao={registrarAcao}
+          />
         ) : vagasLivres > 0 ? (
-          <BDRCadastrarLead key="cadastro-auto" bdrId={bdrId} state={state} save={save} iniciarAberto={true} onCadastrado={onLeadCadastrado} />
+          <BDRCadastrarLead
+            key="cadastro-auto" bdrId={bdrId} state={state} save={save}
+            iniciarAberto={true} onCadastrado={onLeadCadastrado}
+            salvarAutoCount={salvarAutoCount} dadosFormRef={dadosFormRef}
+          />
         ) : (
           <div className="bg-white rounded-xl p-6 shadow-sm text-center mt-4">
             <div className="text-3xl mb-2">⏳</div>
@@ -568,40 +631,49 @@ function BDR({ bdrId, state, save, setView }) {
   );
 }
 
-function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, state, save, setView }) {
+function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, onTimerZerouContato, onTimerZerouCadastro, state, save, setView }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
   const coluna = lead?.coluna;
   const colunaParaTempo = coluna === "contato_futuro" ? "contato" : coluna;
-  const totalSec = colunaParaTempo ? (tempos[colunaParaTempo]||10)*60 : vagasLivres>0 ? (tempos.enriquecimento||10)*60 : 0;
+  const totalSec = colunaParaTempo
+    ? (tempos[colunaParaTempo]||10)*60
+    : vagasLivres>0 ? (tempos.enriquecimento||10)*60 : 0;
 
   const [seg, setSeg] = useState(totalSec);
   const [pausado, setPausado] = useState(false);
   const [expirou, setExpirou] = useState(false);
   const [pausaInicio, setPausaInicio] = useState(null);
   const ref = useRef(null);
+  const leadRef = useRef(lead);
+  const zerouRef = useRef(false);
+
+  useEffect(() => { leadRef.current = lead; }, [lead]);
 
   useEffect(() => {
-    setSeg(totalSec); setExpirou(false);
+    setSeg(totalSec); setExpirou(false); zerouRef.current = false;
     if (ref.current) clearInterval(ref.current);
-    if ((!lead && vagasLivres===0) || pausado) return;
+    if ((!lead && vagasLivres===0) || pausado || totalSec===0) return;
     ref.current = setInterval(() => {
       setSeg(s => {
-        if (s <= 1) { clearInterval(ref.current); setExpirou(true); return 0; }
+        if (s <= 1) {
+          clearInterval(ref.current);
+          setExpirou(true);
+          if (!zerouRef.current) {
+            zerouRef.current = true;
+            const leadAtual = leadRef.current;
+            if (leadAtual && (leadAtual.coluna === "contato" || leadAtual.coluna === "contato_futuro")) {
+              setTimeout(() => onTimerZerouContato(leadAtual), 500);
+            } else if (!leadAtual) {
+              setTimeout(() => onTimerZerouCadastro(), 500);
+            }
+          }
+          return 0;
+        }
         return s - 1;
       });
     }, 1000);
     return () => clearInterval(ref.current);
   }, [lead?.id, lead?.coluna, totalSec, pausado]);
-
-  useEffect(() => {
-    if (expirou && lead && lead.coluna === "enriquecimento") {
-      setTimeout(() => {
-        const novoLeads = state.leads.map(l => l.id===lead.id ? {...l, ultimaTentativa: new Date().toISOString()} : l);
-        save({ ...state, leads: novoLeads });
-        setExpirou(false);
-      }, 1500);
-    }
-  }, [expirou]);
 
   const togglePausa = () => {
     if (!pausado) {
@@ -636,7 +708,7 @@ function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, state, save, setView
       )}
       <div className="flex items-center gap-2">
         <button onClick={togglePausa}
-          className={`text-xl px-3 py-1.5 rounded-lg transition ${pausado?"bg-blue-600 text-white hover:bg-blue-700":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+          className={`text-xl px-3 py-1.5 rounded-lg transition ${pausado?"bg-blue-600 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
           title={pausado?"Retomar":"Pausar"}>
           {pausado ? "▶" : "⏸"}
         </button>
@@ -648,12 +720,63 @@ function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, state, save, setView
   );
 }
 
-function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastrado }) {
+function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastrado, salvarAutoCount = 0, dadosFormRef }) {
   const [aberto, setAberto] = useState(iniciarAberto);
   const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter(c => c.ativo);
-  const empty = { nome: "", ...Object.fromEntries(campos.map(c => [c.id, ""])) };
-  const [form, setForm] = useState(empty);
+
+  // Verifica se há lead incompleto deste BDR
+  const leadIncompleto = state.leads.find(l => l.bdrId === bdrId && l.incompleto && l.ativo);
+
+  const getEmpty = () => ({ nome: "", ...Object.fromEntries(campos.map(c => [c.id, ""])) });
+
+  const initialForm = leadIncompleto
+    ? { nome: leadIncompleto.nome||"", ...Object.fromEntries(campos.map(c => [c.id, leadIncompleto[c.id]||""])) }
+    : getEmpty();
+
+  const [form, setForm] = useState(initialForm);
   const [erros, setErros] = useState({});
+  const formRef = useRef(form);
+  useEffect(() => { formRef.current = form; }, [form]);
+  if (dadosFormRef) dadosFormRef.current = formRef;
+
+  // Salvar automaticamente quando timer zera
+  useEffect(() => {
+    if (salvarAutoCount > 0) {
+      const dadosAtuais = formRef.current;
+      if (dadosAtuais.nome?.trim()) {
+        salvarParcial(dadosAtuais);
+      }
+    }
+  }, [salvarAutoCount]);
+
+  const salvarParcial = (dadosAtuais) => {
+    const obs = dadosAtuais.observacao?.trim() || "";
+    const historico = obs ? [{ texto: obs, dataHora: formatarDataHora() }] : [];
+
+    if (leadIncompleto) {
+      // Atualiza o lead incompleto existente
+      const novoLeads = state.leads.map(l =>
+        l.id === leadIncompleto.id ? { ...l, ...dadosAtuais, historico, ultimaTentativa: new Date().toISOString() } : l
+      );
+      save({ ...state, leads: novoLeads });
+    } else {
+      const novoLead = {
+        ...dadosAtuais, id: uid(), bdrId,
+        coluna: "contato",
+        incompleto: true,
+        dataCriacao: new Date().toISOString(),
+        dataMovimentacao: new Date().toISOString(),
+        dataContatoFuturo: null,
+        historico,
+        observacao: "",
+        tentativas: 0, ativo: true,
+        ultimaTentativa: new Date().toISOString(),
+      };
+      save({ ...state, leads: [...state.leads, novoLead] });
+    }
+    setAberto(false);
+    if (onCadastrado) onCadastrado();
+  };
 
   const validar = () => {
     const novosErros = {};
@@ -668,20 +791,33 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
   const cadastrar = () => {
     if (!validar()) return;
     const obs = form.observacao?.trim() || "";
-    const historico = obs ? [{ texto: obs, dataHora: formatarDataHora() }] : [];
-    const novoLead = {
-      ...form, id: uid(), bdrId,
-      coluna: "contato",
-      dataCriacao: new Date().toISOString(),
-      dataMovimentacao: new Date().toISOString(),
-      dataContatoFuturo: null,
-      historico,
-      observacao: "",
-      tentativas: 0, ativo: true,
-      ultimaTentativa: new Date().toISOString(),
-    };
-    save({ ...state, leads: [...state.leads, novoLead] });
-    setForm(empty); setErros({}); setAberto(false);
+    const historicoBase = leadIncompleto?.historico || [];
+    const historico = obs ? [...historicoBase, { texto: obs, dataHora: formatarDataHora() }] : historicoBase;
+
+    if (leadIncompleto) {
+      // Finaliza o lead incompleto
+      const novoLeads = state.leads.map(l =>
+        l.id === leadIncompleto.id
+          ? { ...l, ...form, incompleto: false, historico, coluna: "contato", dataMovimentacao: new Date().toISOString() }
+          : l
+      );
+      save({ ...state, leads: novoLeads });
+    } else {
+      const novoLead = {
+        ...form, id: uid(), bdrId,
+        coluna: "contato",
+        incompleto: false,
+        dataCriacao: new Date().toISOString(),
+        dataMovimentacao: new Date().toISOString(),
+        dataContatoFuturo: null,
+        historico,
+        observacao: "",
+        tentativas: 0, ativo: true,
+        ultimaTentativa: new Date().toISOString(),
+      };
+      save({ ...state, leads: [...state.leads, novoLead] });
+    }
+    setForm(getEmpty()); setErros({}); setAberto(false);
     if (onCadastrado) onCadastrado();
   };
 
@@ -694,20 +830,24 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
 
   return (
     <div className="bg-white rounded-xl p-4 shadow-sm pb-24">
-      <p className="font-semibold text-gray-800 mb-1 text-sm">Cadastro e Enriquecimento</p>
-      <p className="text-xs text-gray-400 mb-3">Preencha os dados do lead e as informações da pesquisa.</p>
+      <p className="font-semibold text-gray-800 mb-1 text-sm">
+        {leadIncompleto ? "Continuar cadastro — Lead incompleto" : "Cadastro e Enriquecimento"}
+      </p>
+      <p className="text-xs text-gray-400 mb-3">
+        {leadIncompleto ? "Preencha os dados que faltaram e finalize o cadastro." : "Preencha os dados do lead e as informações da pesquisa."}
+      </p>
       <div className="space-y-2">
         <div>
           <label className="text-xs text-gray-500 block mb-0.5">Nome *</label>
           <input className={`w-full border rounded-lg px-3 py-2 text-sm ${erros.nome?"border-red-400 bg-red-50":"border-gray-200"}`}
-            value={form.nome||""} onChange={e => setForm({...form, nome: e.target.value})} />
+            value={form.nome||""} onChange={e=>setForm({...form,nome:e.target.value})} />
           {erros.nome && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
         </div>
         {campos.map(campo => (
           <div key={campo.id}>
             <label className="text-xs text-gray-500 block mb-0.5">{campo.label}{campo.obrigatorio?" *":""}</label>
             <input className={`w-full border rounded-lg px-3 py-2 text-sm ${erros[campo.id]?"border-red-400 bg-red-50":"border-gray-200"}`}
-              value={form[campo.id]||""} onChange={e => setForm({...form, [campo.id]: e.target.value})} />
+              value={form[campo.id]||""} onChange={e=>setForm({...form,[campo.id]:e.target.value})} />
             {erros[campo.id] && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
           </div>
         ))}
@@ -715,12 +855,14 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
           <label className="text-xs text-gray-500 block mb-0.5">Observação</label>
           <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-16 resize-none"
             placeholder="Anotações sobre o lead..."
-            value={form.observacao||""} onChange={e => setForm({...form, observacao: e.target.value})} />
+            value={form.observacao||""} onChange={e=>setForm({...form,observacao:e.target.value})} />
         </div>
       </div>
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg flex gap-3">
         <button onClick={() => setAberto(false)} className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">Cancelar</button>
-        <button onClick={cadastrar} className="flex-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:bg-blue-700">Finalizar cadastro →</button>
+        <button onClick={cadastrar} className="flex-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:bg-blue-700">
+          {leadIncompleto ? "Finalizar cadastro ✓" : "Finalizar cadastro →"}
+        </button>
       </div>
     </div>
   );
@@ -732,7 +874,9 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
   const [feedback, setFeedback] = useState(null);
 
   const atualizarLead = updates => {
-    const novoLeads = state.leads.map(l => l.id===lead.id ? {...l, ...updates, dataMovimentacao: new Date().toISOString()} : l);
+    const novoLeads = state.leads.map(l =>
+      l.id===lead.id ? {...l,...updates,dataMovimentacao:new Date().toISOString()} : l
+    );
     save({ ...state, leads: novoLeads });
   };
 
@@ -811,25 +955,23 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
         </div>
       )}
 
-      {/* Observação e data contato futuro */}
       {isContato && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <div>
             <label className="text-xs text-gray-500 block mb-1">Observação</label>
             <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-14 resize-none"
               placeholder="O que aconteceu nesta tentativa?"
-              value={obs} onChange={e => setObs(e.target.value)} />
+              value={obs} onChange={e=>setObs(e.target.value)} />
           </div>
           <div className="mt-2">
             <label className="text-xs text-gray-500 block mb-1">Data para contato futuro (se aplicável)</label>
             <input type="date" min={new Date().toISOString().split("T")[0]}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-              value={dataFuturo} onChange={e => setDataFuturo(e.target.value)} />
+              value={dataFuturo} onChange={e=>setDataFuturo(e.target.value)} />
           </div>
         </div>
       )}
 
-      {/* Botões de resultado */}
       {isContato && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <p className="text-xs font-semibold text-gray-700 mb-3 uppercase tracking-wide">Registrar resultado</p>
@@ -850,7 +992,6 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
         </div>
       )}
 
-      {/* Botão fixo inferior */}
       {isContato && (
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg">
           <button onClick={() => registrarResultado("pulou")}
