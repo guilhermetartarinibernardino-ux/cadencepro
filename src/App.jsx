@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── CONSTANTES ──────────────────────────────────────────────────────────────
-const STORAGE_KEY = "cadencepro-v3";
+const STORAGE_KEY = "cadencepro-v9";
 const MAX_LEADS = 20;
 const DIAS_POR_LEAD = 3;
 
@@ -13,41 +13,26 @@ const COLUNAS = {
   contato_futuro: { label: "Contato Futuro",      bg: "bg-purple-50", border: "border-purple-200", dot: "bg-purple-500" },
 };
 
-const TEMPO_PADRAO = {
-  enriquecimento: 10,
-  contato: 15,
-  contato_futuro: 15,
-};
+const TEMPO_PADRAO = { enriquecimento: 10, contato: 15 };
 
 const CAMPOS_PADRAO = [
-  { id: "empresa",   label: "Empresa",   ativo: true,  fixo: false },
-  { id: "linkedin",  label: "LinkedIn",  ativo: true,  fixo: false },
-  { id: "instagram", label: "Instagram", ativo: false, fixo: false },
-  { id: "site",      label: "Site",      ativo: false, fixo: false },
-  { id: "telefone",  label: "Telefone",  ativo: true,  fixo: false },
-  { id: "email",     label: "Email",     ativo: true,  fixo: false },
+  { id: "empresa",   label: "Empresa",   ativo: true,  fixo: false, obrigatorio: false },
+  { id: "linkedin",  label: "LinkedIn",  ativo: true,  fixo: false, obrigatorio: false },
+  { id: "instagram", label: "Instagram", ativo: false, fixo: false, obrigatorio: false },
+  { id: "site",      label: "Site",      ativo: false, fixo: false, obrigatorio: false },
+  { id: "telefone",  label: "Telefone",  ativo: true,  fixo: false, obrigatorio: false },
+  { id: "email",     label: "Email",     ativo: true,  fixo: false, obrigatorio: false },
 ];
 
 const INITIAL = {
-  bdrs: [{ id: "bdr1", nome: "BDR 1" }, { id: "bdr2", nome: "BDR 2" }],
+  bdrs: [{ id: "bdr1", nome: "BDR 1", tempoPausadoMs: 0 }, { id: "bdr2", nome: "BDR 2", tempoPausadoMs: 0 }],
   leads: [],
-  config: {
-    tempos: { enriquecimento: 10, contato: 15, contato_futuro: 15 },
-    camposEnriquecimento: CAMPOS_PADRAO,
-  },
+  acoes: [],
+  config: { tempos: TEMPO_PADRAO, camposEnriquecimento: CAMPOS_PADRAO },
 };
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).substr(2, 9); }
-
-function formatarDataHora() {
-  const agora = new Date();
-  const dia = String(agora.getDate()).padStart(2, "0");
-  const mes = String(agora.getMonth() + 1).padStart(2, "0");
-  const hora = String(agora.getHours()).padStart(2, "0");
-  const min = String(agora.getMinutes()).padStart(2, "0");
-  return `${dia}/${mes} ${hora}:${min}`;
-}
 
 function toUrl(val) {
   if (!val) return "";
@@ -69,60 +54,65 @@ function diasDesde(iso) {
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
 }
 
+function formatarDataHora() {
+  const agora = new Date();
+  return `${String(agora.getDate()).padStart(2,"0")}/${String(agora.getMonth()+1).padStart(2,"0")} ${String(agora.getHours()).padStart(2,"0")}:${String(agora.getMinutes()).padStart(2,"0")}`;
+}
+
+function dataISO(iso) {
+  return iso ? iso.split("T")[0] : "";
+}
+
+function formatarTempo(ms) {
+  if (!ms) return "0min";
+  const min = Math.floor(ms / 60000);
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return h > 0 ? `${h}h ${m}min` : `${m}min`;
+}
+
 function leadsAtivosBDR(leads, bdrId) {
-  return leads.filter(
-    (l) => l.bdrId === bdrId && l.ativo &&
-           l.coluna !== "agendado" && l.coluna !== "nao_agendado"
-  );
+  return leads.filter(l => l.bdrId === bdrId && l.ativo && l.coluna !== "agendado" && l.coluna !== "nao_agendado");
 }
 
 function proximoLead(leads, bdrId, excluirIds = new Set()) {
-  const ativos = leadsAtivosBDR(leads, bdrId).filter((l) => !excluirIds.has(l.id));
-
-  // 1: enriquecimento — mais antigo primeiro
-  const enrich = ativos
-    .filter((l) => l.coluna === "enriquecimento")
-    .sort((a,b) => (a.ultimaTentativa || a.dataCriacao).localeCompare(b.ultimaTentativa || b.dataCriacao));
+  const ativos = leadsAtivosBDR(leads, bdrId).filter(l => !excluirIds.has(l.id));
+  const enrich = ativos.filter(l => l.coluna === "enriquecimento")
+    .sort((a,b) => (a.ultimaTentativa||a.dataCriacao).localeCompare(b.ultimaTentativa||b.dataCriacao));
   if (enrich.length) return enrich[0];
-
-  // 2: cadência de contato — mais antigo primeiro (inclui retornos de contato futuro com data "0000...")
-  const contato = ativos
-    .filter((l) => l.coluna === "contato")
-    .sort((a,b) => (a.ultimaTentativa || a.dataCriacao).localeCompare(b.ultimaTentativa || b.dataCriacao));
+  const contato = ativos.filter(l => l.coluna === "contato")
+    .sort((a,b) => (a.ultimaTentativa||a.dataCriacao).localeCompare(b.ultimaTentativa||b.dataCriacao));
   if (contato.length) return contato[0];
-
   return null;
 }
 
 function verificarDescarte(leads) {
-  return leads.map((l) => {
+  return leads.map(l => {
     if (!l.ativo || l.coluna !== "contato") return l;
-    if (diasDesde(l.dataCriacao) >= DIAS_POR_LEAD)
-      return { ...l, coluna: "nao_agendado", ativo: false };
+    if (diasDesde(l.dataCriacao) >= DIAS_POR_LEAD) return { ...l, coluna: "nao_agendado", ativo: false, dataMovimentacao: new Date().toISOString() };
     return l;
   });
 }
 
 function verificarRetornoContatoFuturo(leads) {
   const agora = new Date();
-  return leads.map((l) => {
+  return leads.map(l => {
     if (l.coluna !== "contato_futuro" || !l.dataContatoFuturo) return l;
-    // 1 dia antes da data agendada, às 23h50
-    const dataContato = new Date(l.dataContatoFuturo + "T00:00:00");
-    const dataRetorno = new Date(dataContato);
+    const dataRetorno = new Date(l.dataContatoFuturo + "T00:00:00");
     dataRetorno.setDate(dataRetorno.getDate() - 1);
     dataRetorno.setHours(23, 50, 0, 0);
-    if (agora >= dataRetorno) {
-      return {
-        ...l,
-        coluna: "contato",
-        ativo: true,
-        // Data antiga garante prioridade máxima na fila
-        ultimaTentativa: "0000-01-01T00:00:00.000Z",
-      };
-    }
+    if (agora >= dataRetorno) return { ...l, coluna: "contato", ativo: true, ultimaTentativa: "0000-01-01T00:00:00.000Z", dataMovimentacao: new Date().toISOString() };
     return l;
   });
+}
+
+function downloadCSV(rows, filename) {
+  const csv = rows.map(r => r.map(c => `"${(c||"").toString().replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ─── HOME ────────────────────────────────────────────────────────────────────
@@ -132,18 +122,16 @@ function Home({ setView, state }) {
       <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-xs text-center">
         <h1 className="text-2xl font-bold text-gray-900 mb-1">CadencePro</h1>
         <p className="text-gray-400 text-sm mb-8">Prospecção cadenciada</p>
-        <button
-          onClick={() => setView({ tela: "admin" })}
-          className="w-full bg-gray-900 text-white py-3 rounded-xl mb-3 font-semibold hover:bg-gray-700 transition"
-        >
+        <button onClick={() => setView({ tela: "admin" })}
+          className="w-full bg-gray-900 text-white py-3 rounded-xl mb-3 font-semibold hover:bg-gray-700 transition">
           Entrar como Admin
         </button>
         <div className="space-y-2">
-          {state.bdrs.map((bdr) => (
-            <button key={bdr.id}
-              onClick={() => setView({ tela: "bdr_pronto", bdrId: bdr.id })}
-              className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 transition"
-            >{bdr.nome}</button>
+          {state.bdrs.map(bdr => (
+            <button key={bdr.id} onClick={() => setView({ tela: "bdr_pronto", bdrId: bdr.id })}
+              className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 transition">
+              {bdr.nome}
+            </button>
           ))}
         </div>
       </div>
@@ -153,23 +141,18 @@ function Home({ setView, state }) {
 
 // ─── BDR PRONTO ──────────────────────────────────────────────────────────────
 function BDRPronto({ bdrId, state, setView }) {
-  const bdr = state.bdrs.find((b) => b.id === bdrId);
+  const bdr = state.bdrs.find(b => b.id === bdrId);
   return (
     <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-xs text-center">
         <p className="text-gray-400 text-sm mb-1">CadencePro</p>
         <h2 className="text-xl font-bold text-gray-900 mb-2">{bdr?.nome}</h2>
         <p className="text-gray-500 text-sm mb-8">Está preparado para iniciar?</p>
-        <button
-          onClick={() => setView({ tela: "bdr", bdrId })}
-          className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-base hover:bg-blue-700 transition"
-        >
+        <button onClick={() => setView({ tela: "bdr", bdrId })}
+          className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-base hover:bg-blue-700 transition">
           Sim, pode começar!
         </button>
-        <button
-          onClick={() => setView({ tela: "home" })}
-          className="w-full mt-3 text-sm text-gray-400 hover:text-gray-600 py-2"
-        >
+        <button onClick={() => setView({ tela: "home" })} className="w-full mt-3 text-sm text-gray-400 hover:text-gray-600 py-2">
           Voltar
         </button>
       </div>
@@ -189,9 +172,9 @@ function Admin({ state, save, setView }) {
       <div className="bg-white border-b flex px-4">
         {[["kanban","Kanban"],["bdrs","BDRs"],["config","Configurações"]].map(([id,label]) => (
           <button key={id} onClick={() => setTab(id)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition ${
-              tab === id ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}>{label}</button>
+            className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition ${tab===id?"border-blue-600 text-blue-600":"border-transparent text-gray-500 hover:text-gray-700"}`}>
+            {label}
+          </button>
         ))}
       </div>
       <div className="p-4">
@@ -204,53 +187,92 @@ function Admin({ state, save, setView }) {
 }
 
 function AdminKanban({ state, save }) {
-  const getBDR = (id) => state.bdrs.find((b) => b.id === id);
+  const hoje = new Date().toISOString().split("T")[0];
+  const [filtroData, setFiltroData] = useState(hoje);
   const [confirmarDelete, setConfirmarDelete] = useState(null);
+  const getBDR = id => state.bdrs.find(b => b.id === id);
+
+  const leadsFiltrados = filtroData
+    ? state.leads.filter(l => dataISO(l.dataCriacao) === filtroData || dataISO(l.dataMovimentacao) === filtroData)
+    : state.leads;
 
   const moverLead = (leadId, novaColuna) => {
-    const novoLeads = state.leads.map((l) => {
+    const novoLeads = state.leads.map(l => {
       if (l.id !== leadId) return l;
       const ativo = novaColuna !== "agendado" && novaColuna !== "nao_agendado";
-      return { ...l, coluna: novaColuna, ativo };
+      return { ...l, coluna: novaColuna, ativo, dataMovimentacao: new Date().toISOString() };
     });
     save({ ...state, leads: novoLeads });
   };
 
-  const deletarLead = (leadId) => {
-    save({ ...state, leads: state.leads.filter((l) => l.id !== leadId) });
+  const deletarLead = id => {
+    save({ ...state, leads: state.leads.filter(l => l.id !== id) });
     setConfirmarDelete(null);
   };
 
-  const leadParaDeletar = confirmarDelete ? state.leads.find((l) => l.id === confirmarDelete) : null;
+  const handleDownload = () => {
+    const header = ["Nome", "Empresa", "Etapa", "BDR", "Data Criação", "Última Movimentação"];
+    const rows = leadsFiltrados.map(l => [
+      l.nome, l.empresa || "", COLUNAS[l.coluna]?.label || l.coluna,
+      getBDR(l.bdrId)?.nome || "", dataISO(l.dataCriacao), dataISO(l.dataMovimentacao) || ""
+    ]);
+    downloadCSV([header, ...rows], `kanban-${filtroData || "todos"}.csv`);
+  };
+
+  // Estatísticas por BDR com filtro
+  const acoesFiltradas = filtroData
+    ? (state.acoes || []).filter(a => dataISO(a.dataHora) === filtroData)
+    : (state.acoes || []);
+
+  const estatsBDR = state.bdrs.map(bdr => {
+    const acoesBDR = acoesFiltradas.filter(a => a.bdrId === bdr.id);
+    return {
+      ...bdr,
+      agendou: acoesBDR.filter(a => a.tipo === "agendado").length,
+      etapaRealizada: acoesBDR.filter(a => a.tipo === "etapa_realizada").length,
+      pulou: acoesBDR.filter(a => a.tipo === "pulou").length,
+      contatoFuturo: acoesBDR.filter(a => a.tipo === "contato_futuro").length,
+      semInteresse: acoesBDR.filter(a => a.tipo === "sem_interesse").length,
+    };
+  });
+
+  const leadParaDeletar = confirmarDelete ? state.leads.find(l => l.id === confirmarDelete) : null;
 
   return (
     <div>
-      {/* Modal de confirmação de exclusão */}
+      {/* Modal de confirmação */}
       {confirmarDelete && (
         <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full">
             <p className="font-bold text-gray-900 mb-1">Excluir lead?</p>
-            <p className="text-sm text-gray-500 mb-5">
-              Tem certeza que deseja excluir <strong>{leadParaDeletar?.nome}</strong>? Esta ação não pode ser desfeita.
-            </p>
+            <p className="text-sm text-gray-500 mb-5">Tem certeza que deseja excluir <strong>{leadParaDeletar?.nome}</strong>? Esta ação não pode ser desfeita.</p>
             <div className="flex gap-3">
-              <button onClick={() => setConfirmarDelete(null)}
-                className="flex-1 border border-gray-200 text-gray-600 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">
-                Cancelar
-              </button>
-              <button onClick={() => deletarLead(confirmarDelete)}
-                className="flex-1 bg-red-500 text-white py-2 rounded-xl text-sm font-bold hover:bg-red-600">
-                Sim, excluir
-              </button>
+              <button onClick={() => setConfirmarDelete(null)} className="flex-1 border border-gray-200 text-gray-600 py-2 rounded-xl text-sm font-medium hover:bg-gray-50">Cancelar</button>
+              <button onClick={() => deletarLead(confirmarDelete)} className="flex-1 bg-red-500 text-white py-2 rounded-xl text-sm font-bold hover:bg-red-600">Sim, excluir</button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Filtro e Download */}
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <div className="flex items-center gap-2 bg-white rounded-xl px-4 py-2 shadow-sm border border-gray-100">
+          <label className="text-xs text-gray-500">Filtrar por data:</label>
+          <input type="date" value={filtroData} onChange={e => setFiltroData(e.target.value)}
+            className="border-0 text-sm text-gray-700 focus:outline-none" />
+          {filtroData && <button onClick={() => setFiltroData("")} className="text-xs text-gray-400 hover:text-gray-600 ml-1">✕</button>}
+        </div>
+        <button onClick={handleDownload}
+          className="bg-gray-800 text-white text-xs px-4 py-2 rounded-xl hover:bg-gray-700 font-medium">
+          ⬇ Download planilha
+        </button>
+      </div>
+
+      {/* Kanban */}
       <div className="overflow-x-auto">
         <div className="flex gap-3 min-w-max pb-4">
           {Object.entries(COLUNAS).map(([key, col]) => {
-            const leads = state.leads.filter((l) => l.coluna === key);
+            const leads = leadsFiltrados.filter(l => l.coluna === key);
             return (
               <div key={key} className="w-52">
                 <div className={`rounded-xl border ${col.border} ${col.bg} p-3`}>
@@ -261,32 +283,25 @@ function AdminKanban({ state, save }) {
                   </div>
                   <div className="space-y-2">
                     {leads.length === 0 && <p className="text-xs text-gray-300 text-center py-4">Vazio</p>}
-                    {leads.map((lead) => {
+                    {leads.map(lead => {
                       const dias = diasDesde(lead.dataCriacao);
                       const urgente = key === "contato" && dias >= 2;
                       return (
-                        <div key={lead.id} className={`bg-white rounded-lg p-3 shadow-sm border ${urgente ? "border-red-300" : "border-gray-100"}`}>
+                        <div key={lead.id} className={`bg-white rounded-lg p-3 shadow-sm border ${urgente?"border-red-300":"border-gray-100"}`}>
                           <div className="flex items-start justify-between gap-1">
                             <div className="min-w-0">
                               <p className="text-xs font-semibold text-gray-800 truncate">{lead.nome}</p>
                               <p className="text-xs text-gray-400 truncate">{lead.empresa}</p>
                             </div>
-                            <button onClick={() => setConfirmarDelete(lead.id)}
-                              className="text-gray-300 hover:text-red-500 transition shrink-0 mt-0.5" title="Excluir lead">
-                              🗑️
-                            </button>
+                            <button onClick={() => setConfirmarDelete(lead.id)} className="text-gray-300 hover:text-red-500 transition shrink-0" title="Excluir">🗑️</button>
                           </div>
                           <div className="flex items-center justify-between mt-1">
                             <span className="text-xs text-gray-400">{getBDR(lead.bdrId)?.nome}</span>
-                            <span className={`text-xs font-medium ${urgente ? "text-red-500" : "text-gray-400"}`}>{dias}d</span>
+                            <span className={`text-xs font-medium ${urgente?"text-red-500":"text-gray-400"}`}>{dias}d</span>
                           </div>
-                          {lead.observacao && <p className="text-xs text-gray-500 mt-1 bg-gray-50 rounded p-1 truncate">{lead.observacao}</p>}
-                          {lead.dataContatoFuturo && <p className="text-xs text-purple-600 mt-1">📅 {new Date(lead.dataContatoFuturo).toLocaleDateString("pt-BR")}</p>}
-                          <select
-                            className="w-full mt-2 text-xs border border-gray-200 rounded px-1 py-1 text-gray-600"
-                            value={lead.coluna}
-                            onChange={(e) => moverLead(lead.id, e.target.value)}
-                          >
+                          {lead.dataContatoFuturo && <p className="text-xs text-purple-600 mt-1">📅 {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>}
+                          <select className="w-full mt-2 text-xs border border-gray-200 rounded px-1 py-1 text-gray-600"
+                            value={lead.coluna} onChange={e => moverLead(lead.id, e.target.value)}>
                             {Object.entries(COLUNAS).map(([k,c]) => <option key={k} value={k}>{c.label}</option>)}
                           </select>
                         </div>
@@ -300,23 +315,38 @@ function AdminKanban({ state, save }) {
         </div>
       </div>
 
-      <div className="mt-4">
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">Resumo por BDR</h3>
-        <div className="grid grid-cols-2 gap-3 max-w-lg">
-          {state.bdrs.map((bdr) => {
+      {/* Resumo por BDR */}
+      <div className="mt-5">
+        <p className="text-sm font-semibold text-gray-700 mb-3">
+          Resumo por BDR {filtroData ? `— ${new Date(filtroData+"T12:00:00").toLocaleDateString("pt-BR")}` : ""}
+        </p>
+        <div className="grid grid-cols-1 gap-3 max-w-2xl">
+          {estatsBDR.map(bdr => {
             const ativos = leadsAtivosBDR(state.leads, bdr.id).length;
             return (
               <div key={bdr.id} className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-                <p className="font-semibold text-gray-800 text-sm">{bdr.nome}</p>
-                <div className="mt-2">
-                  <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="font-semibold text-gray-800 text-sm">{bdr.nome}</p>
+                  <span className="text-xs text-gray-400">Pausa: {formatarTempo(bdr.tempoPausadoMs)}</span>
+                </div>
+                <div className="mb-2">
+                  <div className="flex justify-between text-xs text-gray-500 mb-1">
                     <span>Leads ativos</span>
                     <span className="font-bold text-gray-800">{ativos}/{MAX_LEADS}</span>
                   </div>
                   <div className="h-1.5 bg-gray-100 rounded-full">
-                    <div className={`h-1.5 rounded-full ${ativos >= MAX_LEADS ? "bg-green-500" : "bg-blue-500"}`}
-                      style={{ width: `${(ativos / MAX_LEADS) * 100}%` }} />
+                    <div className={`h-1.5 rounded-full ${ativos>=MAX_LEADS?"bg-green-500":"bg-blue-500"}`}
+                      style={{width:`${(ativos/MAX_LEADS)*100}%`}} />
                   </div>
+                </div>
+                <div className="grid grid-cols-4 gap-2 mt-3">
+                  {[["✅","Agendou",bdr.agendou,"green"],["✓","Et. realiz.",bdr.etapaRealizada,"yellow"],["⏭","Pulou",bdr.pulou,"gray"],["📅","Cont. fut.",bdr.contatoFuturo,"purple"]].map(([icon,label,val,cor])=>(
+                    <div key={label} className={`text-center bg-${cor}-50 rounded-lg py-2`}>
+                      <p className="text-lg">{icon}</p>
+                      <p className="text-lg font-bold text-gray-800">{val}</p>
+                      <p className="text-xs text-gray-400">{label}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
@@ -331,33 +361,28 @@ function AdminBDRs({ state, save }) {
   const [nome, setNome] = useState("");
   const addBDR = () => {
     if (!nome.trim()) return;
-    save({ ...state, bdrs: [...state.bdrs, { id: uid(), nome: nome.trim() }] });
+    save({ ...state, bdrs: [...state.bdrs, { id: uid(), nome: nome.trim(), tempoPausadoMs: 0 }] });
     setNome("");
   };
-  const removeBDR = (id) => save({ ...state, bdrs: state.bdrs.filter((b) => b.id !== id), leads: state.leads.filter((l) => l.bdrId !== id) });
-
+  const removeBDR = id => save({ ...state, bdrs: state.bdrs.filter(b => b.id !== id), leads: state.leads.filter(l => l.bdrId !== id) });
   return (
     <div className="max-w-md">
       <h2 className="font-semibold text-gray-800 mb-3">Adicionar BDR</h2>
       <div className="bg-white rounded-xl p-4 shadow-sm mb-5 flex gap-3">
-        <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
-          placeholder="Nome do BDR" value={nome} onChange={(e) => setNome(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addBDR()} />
+        <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="Nome do BDR"
+          value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => e.key==="Enter"&&addBDR()} />
         <button onClick={addBDR} className="bg-blue-600 text-white px-4 rounded-lg text-sm font-semibold hover:bg-blue-700">Adicionar</button>
       </div>
       <div className="space-y-2">
-        {state.bdrs.map((bdr) => {
-          const ativos = leadsAtivosBDR(state.leads, bdr.id).length;
-          return (
-            <div key={bdr.id} className="bg-white rounded-xl px-4 py-3 shadow-sm flex items-center justify-between">
-              <div>
-                <p className="font-medium text-gray-800 text-sm">{bdr.nome}</p>
-                <p className="text-xs text-gray-400">{ativos} leads ativos</p>
-              </div>
-              <button onClick={() => removeBDR(bdr.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
+        {state.bdrs.map(bdr => (
+          <div key={bdr.id} className="bg-white rounded-xl px-4 py-3 shadow-sm flex items-center justify-between">
+            <div>
+              <p className="font-medium text-gray-800 text-sm">{bdr.nome}</p>
+              <p className="text-xs text-gray-400">{leadsAtivosBDR(state.leads, bdr.id).length} leads ativos</p>
             </div>
-          );
-        })}
+            <button onClick={() => removeBDR(bdr.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -374,29 +399,24 @@ function AdminConfig({ state, save }) {
     alert("Tempos salvos!");
   };
 
-  const toggleCampo = (id) => {
-    const novos = campos.map((c) => c.id === id ? { ...c, ativo: !c.ativo } : c);
+  const toggleCampo = (id, prop) => {
+    const novos = campos.map(c => c.id === id ? { ...c, [prop]: !c[prop] } : c);
     save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
   };
 
   const adicionarCampo = () => {
     if (!novoCampo.trim()) return;
     const id = novoCampo.trim().toLowerCase().replace(/\s+/g, "_");
-    if (campos.find((c) => c.id === id)) return;
-    const novos = [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false }];
+    if (campos.find(c => c.id === id)) return;
+    const novos = [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false, obrigatorio: false }];
     save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
     setNovoCampo("");
   };
 
-  const removerCampo = (id) => {
-    const novos = campos.filter((c) => c.id !== id);
+  const removerCampo = id => {
+    const novos = campos.filter(c => c.id !== id);
     save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
   };
-
-  const etapas = [
-    { key: "enriquecimento", label: "Enriquecimento de lead" },
-    { key: "contato",        label: "Cadência de contato" },
-  ];
 
   return (
     <div className="max-w-sm space-y-6">
@@ -405,71 +425,74 @@ function AdminConfig({ state, save }) {
         <h2 className="font-semibold text-gray-800 mb-1">Tempo por etapa</h2>
         <p className="text-xs text-gray-400 mb-3">Minutos que o BDR tem para cada tarefa.</p>
         <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
-          {etapas.map(({ key, label }) => (
+          {[["enriquecimento","Enriquecimento de lead"],["contato","Cadência de contato"]].map(([key,label]) => (
             <div key={key} className="flex items-center justify-between gap-4">
               <label className="text-sm text-gray-700 flex-1">{label}</label>
               <div className="flex items-center gap-2">
                 <input type="number" min={1} max={60}
                   className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center"
-                  value={formTempos[key] || ""}
-                  onChange={(e) => setFormTempos({ ...formTempos, [key]: parseInt(e.target.value) || 1 })}
-                />
+                  value={formTempos[key]||""}
+                  onChange={e => setFormTempos({...formTempos,[key]:parseInt(e.target.value)||1})} />
                 <span className="text-xs text-gray-400">min</span>
               </div>
             </div>
           ))}
-          <button onClick={salvarTempos} className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700">
-            Salvar tempos
-          </button>
+          <button onClick={salvarTempos} className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700">Salvar tempos</button>
         </div>
       </div>
 
       {/* Campos de Enriquecimento */}
       <div>
         <h2 className="font-semibold text-gray-800 mb-1">Campos de Enriquecimento</h2>
-        <p className="text-xs text-gray-400 mb-3">Selecione quais informações o BDR deve preencher ao enriquecer um lead.</p>
-        <div className="bg-white rounded-xl p-4 shadow-sm space-y-3">
-          {/* Campo fixo - Nome sempre aparece */}
-          <div className="flex items-center justify-between py-1 border-b border-gray-100 pb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1">
-                <div className="w-4 h-4 bg-white rounded-full" />
-              </div>
-              <span className="text-sm text-gray-700">Nome</span>
+        <p className="text-xs text-gray-400 mb-3">Ative os campos e defina quais são obrigatórios.</p>
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          {/* Header */}
+          <div className="flex items-center justify-between text-xs text-gray-400 mb-3 pb-2 border-b border-gray-100">
+            <span>Campo</span>
+            <div className="flex gap-4">
+              <span>Ativo</span>
+              <span>Obrigatório</span>
             </div>
-            <span className="text-xs text-gray-400 italic">sempre ativo</span>
           </div>
 
-          {/* Campos configuráveis */}
-          {campos.map((campo) => (
-            <div key={campo.id} className="flex items-center justify-between py-1">
-              <div className="flex items-center gap-3">
-                <button onClick={() => toggleCampo(campo.id)}
-                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo ? "bg-blue-600 justify-end" : "bg-gray-200 justify-start"}`}>
+          {/* Nome — sempre ativo */}
+          <div className="flex items-center justify-between py-2 border-b border-gray-50">
+            <span className="text-sm text-gray-700">Nome</span>
+            <div className="flex gap-6 items-center">
+              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1"><div className="w-4 h-4 bg-white rounded-full" /></div>
+              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1"><div className="w-4 h-4 bg-white rounded-full" /></div>
+            </div>
+          </div>
+
+          {campos.map(campo => (
+            <div key={campo.id} className="flex items-center justify-between py-2 border-b border-gray-50">
+              <span className={`text-sm ${campo.ativo?"text-gray-800":"text-gray-400"}`}>{campo.label}</span>
+              <div className="flex gap-4 items-center">
+                {/* Toggle Ativo */}
+                <button onClick={() => toggleCampo(campo.id, "ativo")}
+                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo?"bg-blue-600 justify-end":"bg-gray-200 justify-start"}`}>
                   <div className="w-4 h-4 bg-white rounded-full shadow" />
                 </button>
-                <span className={`text-sm ${campo.ativo ? "text-gray-800" : "text-gray-400"}`}>{campo.label}</span>
+                {/* Toggle Obrigatório */}
+                <button onClick={() => campo.ativo && toggleCampo(campo.id, "obrigatorio")}
+                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${!campo.ativo?"opacity-30 cursor-not-allowed":""} ${campo.obrigatorio&&campo.ativo?"bg-red-500 justify-end":"bg-gray-200 justify-start"}`}>
+                  <div className="w-4 h-4 bg-white rounded-full shadow" />
+                </button>
+                {!campo.fixo && (
+                  <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600 ml-1">✕</button>
+                )}
               </div>
-              {!campo.fixo && (
-                <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
-              )}
             </div>
           ))}
 
-          {/* Adicionar campo personalizado */}
-          <div className="pt-3 border-t border-gray-100">
+          <div className="pt-3">
             <p className="text-xs text-gray-500 mb-2 font-medium">Adicionar campo personalizado:</p>
             <div className="flex gap-2">
-              <input
-                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
                 placeholder="Ex: TikTok, Nome do decisor..."
-                value={novoCampo}
-                onChange={(e) => setNovoCampo(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && adicionarCampo()}
-              />
-              <button onClick={adicionarCampo} className="bg-gray-800 text-white px-3 rounded-lg text-sm font-semibold hover:bg-gray-700">
-                +
-              </button>
+                value={novoCampo} onChange={e => setNovoCampo(e.target.value)}
+                onKeyDown={e => e.key==="Enter"&&adicionarCampo()} />
+              <button onClick={adicionarCampo} className="bg-gray-800 text-white px-3 rounded-lg text-sm font-semibold hover:bg-gray-700">+</button>
             </div>
           </div>
         </div>
@@ -480,22 +503,21 @@ function AdminConfig({ state, save }) {
 
 // ─── BDR ─────────────────────────────────────────────────────────────────────
 function BDR({ bdrId, state, save, setView }) {
-  const bdr = state.bdrs.find((b) => b.id === bdrId);
+  const bdr = state.bdrs.find(b => b.id === bdrId);
   const leadsComRetorno = verificarRetornoContatoFuturo(state.leads);
   const leadsOk = verificarDescarte(leadsComRetorno);
   const ativos = leadsAtivosBDR(leadsOk, bdrId);
   const [pausado, setPausado] = useState(false);
   const [cicloIds, setCicloIds] = useState(new Set());
-
   const proximo = proximoLead(leadsOk, bdrId, cicloIds);
   const vagasLivres = MAX_LEADS - ativos.length;
 
-  const onNaoAtendeu = (leadId) => {
-    setCicloIds((prev) => new Set([...prev, leadId]));
-  };
+  const onNaoAtendeu = leadId => setCicloIds(prev => new Set([...prev, leadId]));
+  const onLeadCadastrado = () => setCicloIds(new Set());
 
-  const onLeadCadastrado = () => {
-    setCicloIds(new Set());
+  const registrarAcao = (tipo, leadId) => {
+    const novaAcao = { id: uid(), bdrId, tipo, leadId, dataHora: new Date().toISOString() };
+    save({ ...state, leads: leadsOk, acoes: [...(state.acoes||[]), novaAcao] });
   };
 
   useEffect(() => {
@@ -503,41 +525,42 @@ function BDR({ bdrId, state, save, setView }) {
     if (mudou) save({ ...state, leads: leadsOk });
   }, []);
 
+  const onPausaChange = (pausando, durMs) => {
+    setPausado(pausando);
+    if (!pausando && durMs > 0) {
+      const novosBdrs = state.bdrs.map(b => b.id === bdrId ? { ...b, tempoPausadoMs: (b.tempoPausadoMs||0) + durMs } : b);
+      save({ ...state, bdrs: novosBdrs });
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
-      {/* Header fixo com timer */}
-      <BDRHeader bdr={bdr} lead={proximo} vagasLivres={vagasLivres} pausado={pausado} setPausado={setPausado} state={state} save={save} setView={setView} />
-
-      {/* Espaço para compensar o header fixo */}
+      <BDRHeader bdr={bdr} lead={proximo} vagasLivres={vagasLivres} onPausaChange={onPausaChange} state={state} save={save} setView={setView} />
       <div className="h-14" />
 
       {/* Barra de leads */}
       <div className="bg-white border-b px-5 py-3">
         <div className="flex justify-between text-xs text-gray-500 mb-1">
           <span>Leads no radar</span>
-          <span className={`font-bold ${ativos.length >= MAX_LEADS ? "text-green-600" : "text-blue-600"}`}>
-            {ativos.length}/{MAX_LEADS}
-          </span>
+          <span className={`font-bold ${ativos.length>=MAX_LEADS?"text-green-600":"text-blue-600"}`}>{ativos.length}/{MAX_LEADS}</span>
         </div>
         <div className="h-1.5 bg-gray-100 rounded-full">
-          <div className={`h-1.5 rounded-full transition-all ${ativos.length >= MAX_LEADS ? "bg-green-500" : "bg-blue-500"}`}
-            style={{ width: `${(ativos.length / MAX_LEADS) * 100}%` }} />
+          <div className={`h-1.5 rounded-full transition-all ${ativos.length>=MAX_LEADS?"bg-green-500":"bg-blue-500"}`}
+            style={{width:`${(ativos.length/MAX_LEADS)*100}%`}} />
         </div>
-        {vagasLivres > 0 && (
-          <p className="text-xs text-orange-500 mt-1 font-medium">{vagasLivres} vaga{vagasLivres > 1 ? "s" : ""} disponível</p>
-        )}
       </div>
 
       <div className="flex-1 max-w-lg mx-auto w-full p-4 space-y-3">
         {proximo ? (
-          <BDRTarefa key={proximo.id + "-" + proximo.coluna + "-" + (proximo.tentativas || 0)} lead={proximo} state={state} save={save} onNaoAtendeu={onNaoAtendeu} />
+          <BDRTarefa key={proximo.id+"-"+proximo.coluna+"-"+(proximo.tentativas||0)}
+            lead={proximo} state={state} save={save} onNaoAtendeu={onNaoAtendeu} registrarAcao={registrarAcao} />
         ) : vagasLivres > 0 ? (
           <BDRCadastrarLead key="cadastro-auto" bdrId={bdrId} state={state} save={save} iniciarAberto={true} onCadastrado={onLeadCadastrado} />
         ) : (
           <div className="bg-white rounded-xl p-6 shadow-sm text-center mt-4">
             <div className="text-3xl mb-2">⏳</div>
             <p className="font-semibold text-gray-700 text-sm">Todos os leads estão em cadência</p>
-            <p className="text-xs text-gray-400 mt-1">Aguarde o próximo ciclo ou peça ao Admin para adicionar novos leads.</p>
+            <p className="text-xs text-gray-400 mt-1">Aguarde o próximo ciclo.</p>
           </div>
         )}
       </div>
@@ -545,50 +568,56 @@ function BDR({ bdrId, state, save, setView }) {
   );
 }
 
-// Header fixo com timer embutido
-function BDRHeader({ bdr, lead, vagasLivres, pausado, setPausado, state, save, setView }) {
+function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, state, save, setView }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
   const coluna = lead?.coluna;
   const colunaParaTempo = coluna === "contato_futuro" ? "contato" : coluna;
-  const totalSec = colunaParaTempo ? (tempos[colunaParaTempo] || 10) * 60 : vagasLivres > 0 ? (tempos.enriquecimento || 10) * 60 : 0;
+  const totalSec = colunaParaTempo ? (tempos[colunaParaTempo]||10)*60 : vagasLivres>0 ? (tempos.enriquecimento||10)*60 : 0;
 
   const [seg, setSeg] = useState(totalSec);
+  const [pausado, setPausado] = useState(false);
   const [expirou, setExpirou] = useState(false);
+  const [pausaInicio, setPausaInicio] = useState(null);
   const ref = useRef(null);
 
-  // Reset quando muda de lead/coluna
   useEffect(() => {
-    setSeg(totalSec);
-    setExpirou(false);
+    setSeg(totalSec); setExpirou(false);
     if (ref.current) clearInterval(ref.current);
-    if ((!lead && vagasLivres === 0) || pausado) return;
+    if ((!lead && vagasLivres===0) || pausado) return;
     ref.current = setInterval(() => {
-      setSeg((s) => {
-        if (s <= 1) {
-          clearInterval(ref.current);
-          setExpirou(true);
-          return 0;
-        }
+      setSeg(s => {
+        if (s <= 1) { clearInterval(ref.current); setExpirou(true); return 0; }
         return s - 1;
       });
     }, 1000);
     return () => clearInterval(ref.current);
   }, [lead?.id, lead?.coluna, totalSec, pausado]);
 
-  // Auto-avançar quando expira (só para enriquecimento)
   useEffect(() => {
     if (expirou && lead && lead.coluna === "enriquecimento") {
       setTimeout(() => {
-        const novoLeads = state.leads.map((l) =>
-          l.id === lead.id ? { ...l, ultimaTentativa: new Date().toISOString() } : l
-        );
+        const novoLeads = state.leads.map(l => l.id===lead.id ? {...l, ultimaTentativa: new Date().toISOString()} : l);
         save({ ...state, leads: novoLeads });
         setExpirou(false);
       }, 1500);
     }
   }, [expirou]);
 
-  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const togglePausa = () => {
+    if (!pausado) {
+      clearInterval(ref.current);
+      setPausaInicio(Date.now());
+      setPausado(true);
+      onPausaChange(true, 0);
+    } else {
+      const dur = pausaInicio ? Date.now() - pausaInicio : 0;
+      setPausaInicio(null);
+      setPausado(false);
+      onPausaChange(false, dur);
+    }
+  };
+
+  const fmt = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;
   const quaseAcabou = seg < 60 && seg > 0;
   const mostrarTimer = lead || vagasLivres > 0;
 
@@ -600,22 +629,16 @@ function BDRHeader({ bdr, lead, vagasLivres, pausado, setPausado, state, save, s
       </div>
       {mostrarTimer && (
         <div className={`font-mono font-bold text-lg px-3 py-1 rounded-lg ${
-          pausado ? "bg-gray-100 text-gray-400" :
-          expirou ? "bg-red-100 text-red-600" :
-          quaseAcabou ? "bg-orange-100 text-orange-600" :
-          "bg-gray-100 text-gray-800"
+          pausado?"bg-gray-100 text-gray-400":expirou?"bg-red-100 text-red-600":quaseAcabou?"bg-orange-100 text-orange-600":"bg-gray-100 text-gray-800"
         }`}>
-          {pausado ? "⏸ " + fmt(seg) : expirou ? "00:00" : fmt(seg)}
+          {pausado ? `⏸ ${fmt(seg)}` : expirou ? "00:00" : fmt(seg)}
         </div>
       )}
       <div className="flex items-center gap-2">
-        <button
-          onClick={() => setPausado((p) => !p)}
-          className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
-            pausado ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-          }`}
-        >
-          {pausado ? "Retomar" : "Pausa"}
+        <button onClick={togglePausa}
+          className={`text-xl px-3 py-1.5 rounded-lg transition ${pausado?"bg-blue-600 text-white hover:bg-blue-700":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+          title={pausado?"Retomar":"Pausar"}>
+          {pausado ? "▶" : "⏸"}
         </button>
         <button onClick={() => setView({ tela: "home" })} className="text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 font-medium">
           Sair
@@ -627,18 +650,30 @@ function BDRHeader({ bdr, lead, vagasLivres, pausado, setPausado, state, save, s
 
 function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastrado }) {
   const [aberto, setAberto] = useState(iniciarAberto);
-  const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter((c) => c.ativo);
-  const empty = { nome: "", ...Object.fromEntries(campos.map((c) => [c.id, ""])) };
+  const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter(c => c.ativo);
+  const empty = { nome: "", ...Object.fromEntries(campos.map(c => [c.id, ""])) };
   const [form, setForm] = useState(empty);
+  const [erros, setErros] = useState({});
+
+  const validar = () => {
+    const novosErros = {};
+    if (!form.nome?.trim()) novosErros.nome = true;
+    campos.filter(c => c.obrigatorio).forEach(c => {
+      if (!form[c.id]?.trim()) novosErros[c.id] = true;
+    });
+    setErros(novosErros);
+    return Object.keys(novosErros).length === 0;
+  };
 
   const cadastrar = () => {
-    if (!form.nome.trim()) return;
+    if (!validar()) return;
     const obs = form.observacao?.trim() || "";
     const historico = obs ? [{ texto: obs, dataHora: formatarDataHora() }] : [];
     const novoLead = {
       ...form, id: uid(), bdrId,
       coluna: "contato",
       dataCriacao: new Date().toISOString(),
+      dataMovimentacao: new Date().toISOString(),
       dataContatoFuturo: null,
       historico,
       observacao: "",
@@ -646,8 +681,7 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
       ultimaTentativa: new Date().toISOString(),
     };
     save({ ...state, leads: [...state.leads, novoLead] });
-    setForm(empty);
-    setAberto(false);
+    setForm(empty); setErros({}); setAberto(false);
     if (onCadastrado) onCadastrado();
   };
 
@@ -659,89 +693,87 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
   );
 
   return (
-    <div className="bg-white rounded-xl p-4 shadow-sm pb-20">
+    <div className="bg-white rounded-xl p-4 shadow-sm pb-24">
       <p className="font-semibold text-gray-800 mb-1 text-sm">Cadastro e Enriquecimento</p>
-      <p className="text-xs text-gray-400 mb-3">Preencha os dados do lead e as informações encontradas na pesquisa.</p>
+      <p className="text-xs text-gray-400 mb-3">Preencha os dados do lead e as informações da pesquisa.</p>
       <div className="space-y-2">
         <div>
           <label className="text-xs text-gray-500 block mb-0.5">Nome *</label>
-          <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-            value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} />
+          <input className={`w-full border rounded-lg px-3 py-2 text-sm ${erros.nome?"border-red-400 bg-red-50":"border-gray-200"}`}
+            value={form.nome||""} onChange={e => setForm({...form, nome: e.target.value})} />
+          {erros.nome && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
         </div>
-        {campos.map((campo) => (
+        {campos.map(campo => (
           <div key={campo.id}>
-            <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
-            <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-              value={form[campo.id] || ""}
-              onChange={(e) => setForm({ ...form, [campo.id]: e.target.value })} />
+            <label className="text-xs text-gray-500 block mb-0.5">{campo.label}{campo.obrigatorio?" *":""}</label>
+            <input className={`w-full border rounded-lg px-3 py-2 text-sm ${erros[campo.id]?"border-red-400 bg-red-50":"border-gray-200"}`}
+              value={form[campo.id]||""} onChange={e => setForm({...form, [campo.id]: e.target.value})} />
+            {erros[campo.id] && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
           </div>
         ))}
         <div>
           <label className="text-xs text-gray-500 block mb-0.5">Observação</label>
           <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-16 resize-none"
             placeholder="Anotações sobre o lead..."
-            value={form.observacao || ""}
-            onChange={(e) => setForm({ ...form, observacao: e.target.value })} />
+            value={form.observacao||""} onChange={e => setForm({...form, observacao: e.target.value})} />
         </div>
       </div>
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg flex gap-3">
-        <button onClick={() => setAberto(false)} className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">
-          Cancelar
-        </button>
-        <button onClick={cadastrar} className="flex-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:bg-blue-700">
-          Finalizar cadastro →
-        </button>
+        <button onClick={() => setAberto(false)} className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">Cancelar</button>
+        <button onClick={cadastrar} className="flex-2 bg-blue-600 text-white px-8 py-3 rounded-xl text-sm font-bold hover:bg-blue-700">Finalizar cadastro →</button>
       </div>
     </div>
   );
 }
 
-function BDRTarefa({ lead, state, save, onNaoAtendeu }) {
+function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
   const [obs, setObs] = useState("");
   const [dataFuturo, setDataFuturo] = useState("");
   const [feedback, setFeedback] = useState(null);
 
-  const atualizarLead = (updates) => {
-    const novoLeads = state.leads.map((l) => l.id === lead.id ? { ...l, ...updates } : l);
+  const atualizarLead = updates => {
+    const novoLeads = state.leads.map(l => l.id===lead.id ? {...l, ...updates, dataMovimentacao: new Date().toISOString()} : l);
     save({ ...state, leads: novoLeads });
   };
 
-  const adicionarHistorico = (texto) => {
-    if (!texto.trim()) return [];
-    const entrada = { texto: texto.trim(), dataHora: formatarDataHora() };
-    return [...(lead.historico || []), entrada];
+  const adicionarHistorico = texto => {
+    if (!texto.trim()) return lead.historico || [];
+    return [...(lead.historico||[]), { texto: texto.trim(), dataHora: formatarDataHora() }];
   };
 
-  const registrarResultado = (resultado) => {
+  const registrarResultado = resultado => {
     const hist = adicionarHistorico(obs);
     if (resultado === "agendado") {
       atualizarLead({ coluna: "agendado", ativo: false, historico: hist });
-    } else if (resultado === "nao_agendado") {
+      registrarAcao("agendado", lead.id);
+    } else if (resultado === "sem_interesse") {
       atualizarLead({ coluna: "nao_agendado", ativo: false, historico: hist });
+      registrarAcao("sem_interesse", lead.id);
     } else if (resultado === "contato_futuro" && dataFuturo) {
       atualizarLead({ coluna: "contato_futuro", ativo: false, dataContatoFuturo: dataFuturo, historico: hist });
-    } else if (resultado === "nao_atendeu") {
-      setFeedback("✓ Tentativa registrada");
+      registrarAcao("contato_futuro", lead.id);
+    } else if (resultado === "etapa_realizada") {
+      setFeedback("✓ Etapa registrada");
       setTimeout(() => setFeedback(null), 1500);
-      atualizarLead({ tentativas: (lead.tentativas || 0) + 1, historico: hist, ultimaTentativa: new Date().toISOString() });
+      atualizarLead({ tentativas: (lead.tentativas||0)+1, historico: hist, ultimaTentativa: new Date().toISOString() });
+      registrarAcao("etapa_realizada", lead.id);
+      onNaoAtendeu(lead.id);
+    } else if (resultado === "pulou") {
+      setFeedback("⏭ Pulado");
+      setTimeout(() => setFeedback(null), 1500);
+      atualizarLead({ tentativas: (lead.tentativas||0)+1, historico: adicionarHistorico("Pulou a etapa"), ultimaTentativa: new Date().toISOString() });
+      registrarAcao("pulou", lead.id);
       onNaoAtendeu(lead.id);
     }
   };
 
   const isContato = lead.coluna === "contato" || lead.coluna === "contato_futuro";
-  const instrucao = lead.coluna === "contato_futuro"
-    ? "Este lead solicitou contato nesta data. Entre em contato agora e registre o resultado."
-    : "Entre em contato com este lead pelo canal mais adequado. Registre o resultado usando os botões abaixo.";
-  const titulo = lead.coluna === "contato_futuro" ? "Contato Futuro — PRIORIDADE" : "Tentativa de Contato";
 
   return (
     <div className="space-y-3 pb-20">
-      {/* Feedback de tentativa registrada */}
       {feedback && (
         <div className="fixed top-16 left-0 right-0 z-40 flex justify-center">
-          <div className="bg-gray-900 text-white text-sm font-medium px-5 py-2 rounded-full shadow-lg">
-            {feedback}
-          </div>
+          <div className="bg-gray-900 text-white text-sm font-medium px-5 py-2 rounded-full shadow-lg">{feedback}</div>
         </div>
       )}
 
@@ -750,8 +782,7 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu }) {
         {lead.coluna === "contato_futuro" && (
           <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium mb-2 inline-block">Prioridade máxima</span>
         )}
-        <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Lead</p>
-        <p className="font-bold text-gray-900">{lead.nome}</p>
+        <p className="font-bold text-gray-900 text-lg">{lead.nome}</p>
         {lead.empresa && <p className="text-sm text-gray-500">{lead.empresa}</p>}
         <div className="flex gap-3 mt-2 flex-wrap">
           {lead.linkedin  && <a href={toUrl(lead.linkedin)}  target="_blank" rel="noreferrer" className="text-blue-600 text-xs hover:underline">LinkedIn ↗</a>}
@@ -761,74 +792,68 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu }) {
           {lead.email     && <span className="text-gray-600 text-xs">✉️ {lead.email}</span>}
         </div>
         {lead.dataContatoFuturo && (
-          <p className="text-xs text-purple-600 mt-2">📅 Data combinada: {new Date(lead.dataContatoFuturo).toLocaleDateString("pt-BR")}</p>
+          <p className="text-xs text-purple-600 mt-2">📅 Data combinada: {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>
         )}
       </div>
 
-      {/* Tarefa */}
-      <div className="bg-white rounded-xl p-4 shadow-sm">
-        <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Sua tarefa agora</p>
-        <p className="font-bold text-gray-900 mb-2">{titulo}</p>
-        <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-3">{instrucao}</p>
-
-        {/* Histórico de observações */}
-        {lead.historico && lead.historico.length > 0 && (
-          <div className="mt-3 bg-amber-50 border border-amber-100 rounded-lg p-3">
-            <p className="text-xs text-amber-700 font-medium mb-2">📋 Histórico:</p>
-            <div className="space-y-1.5">
-              {lead.historico.map((item, i) => (
-                <p key={i} className="text-xs text-amber-800">
-                  <span className="font-medium">{i + 1}ª</span> {item.texto}
-                  <span className="text-amber-500 ml-1">({item.dataHora})</span>
-                </p>
-              ))}
-            </div>
+      {/* Histórico */}
+      {lead.historico && lead.historico.length > 0 && (
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 shadow-sm">
+          <p className="text-xs text-amber-700 font-medium mb-2">📋 Histórico:</p>
+          <div className="space-y-1.5">
+            {lead.historico.map((item,i) => (
+              <p key={i} className="text-xs text-amber-800">
+                <span className="font-medium">{i+1}ª</span> {item.texto}
+                <span className="text-amber-500 ml-1">({item.dataHora})</span>
+              </p>
+            ))}
           </div>
-        )}
-
-        <div className="mt-3">
-          <label className="text-xs text-gray-500 block mb-1">Observação</label>
-          <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-14 resize-none"
-            placeholder="O que aconteceu nesta tarefa?"
-            value={obs} onChange={(e) => setObs(e.target.value)} />
         </div>
+      )}
 
-        {/* Data contato futuro */}
-        {isContato && (
+      {/* Observação e data contato futuro */}
+      {isContato && (
+        <div className="bg-white rounded-xl p-4 shadow-sm">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Observação</label>
+            <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-14 resize-none"
+              placeholder="O que aconteceu nesta tentativa?"
+              value={obs} onChange={e => setObs(e.target.value)} />
+          </div>
           <div className="mt-2">
             <label className="text-xs text-gray-500 block mb-1">Data para contato futuro (se aplicável)</label>
             <input type="date" min={new Date().toISOString().split("T")[0]}
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-              value={dataFuturo} onChange={(e) => setDataFuturo(e.target.value)} />
+              value={dataFuturo} onChange={e => setDataFuturo(e.target.value)} />
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Botões de resultado para contato */}
+      {/* Botões de resultado */}
       {isContato && (
         <div className="bg-white rounded-xl p-4 shadow-sm">
           <p className="text-xs font-semibold text-gray-700 mb-3 uppercase tracking-wide">Registrar resultado</p>
           <div className="space-y-2">
             <button onClick={() => registrarResultado("agendado")}
               className="w-full bg-green-500 text-white py-3 rounded-xl font-bold hover:bg-green-600">✅ Agendou reunião</button>
-            <button onClick={() => registrarResultado("nao_atendeu")}
-              className="w-full bg-yellow-500 text-white py-3 rounded-xl font-bold hover:bg-yellow-600">📵 Não atendeu</button>
+            <button onClick={() => registrarResultado("etapa_realizada")}
+              className="w-full bg-yellow-500 text-white py-3 rounded-xl font-bold hover:bg-yellow-600">✓ Etapa realizada</button>
             {dataFuturo && (
               <button onClick={() => registrarResultado("contato_futuro")}
                 className="w-full bg-purple-500 text-white py-3 rounded-xl font-bold hover:bg-purple-600">
-                📅 Contato futuro — {new Date(dataFuturo + "T00:00:00").toLocaleDateString("pt-BR")}
+                📅 Contato futuro — {new Date(dataFuturo+"T00:00:00").toLocaleDateString("pt-BR")}
               </button>
             )}
-            <button onClick={() => registrarResultado("nao_agendado")}
+            <button onClick={() => registrarResultado("sem_interesse")}
               className="w-full bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600">✗ Sem interesse</button>
           </div>
         </div>
       )}
 
-      {/* Botão fixo inferior — pular para próxima tarefa */}
+      {/* Botão fixo inferior */}
       {isContato && (
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg">
-          <button onClick={() => registrarResultado("nao_atendeu")}
+          <button onClick={() => registrarResultado("pulou")}
             className="w-full max-w-lg mx-auto block border-2 border-gray-200 text-gray-500 py-3 rounded-xl font-medium text-sm hover:bg-gray-50 transition">
             Pular para a próxima tarefa →
           </button>
@@ -842,11 +867,10 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu }) {
 export default function App() {
   const [view, setView] = useState({ tela: "home" });
   const [state, setState] = useState(() => loadState());
+  const save = useCallback(next => { setState(next); saveState(next); }, []);
 
-  const save = useCallback((next) => { setState(next); saveState(next); }, []);
-
-  if (view.tela === "home")      return <Home      setView={setView} state={state} />;
-  if (view.tela === "bdr_pronto") return <BDRPronto setView={setView} state={state} bdrId={view.bdrId} />;
-  if (view.tela === "admin")     return <Admin     setView={setView} state={state} save={save} />;
-  if (view.tela === "bdr")       return <BDR       setView={setView} state={state} save={save} bdrId={view.bdrId} />;
+  if (view.tela === "home")       return <Home       setView={setView} state={state} />;
+  if (view.tela === "bdr_pronto") return <BDRPronto  setView={setView} state={state} bdrId={view.bdrId} />;
+  if (view.tela === "admin")      return <Admin      setView={setView} state={state} save={save} />;
+  if (view.tela === "bdr")        return <BDR        setView={setView} state={state} save={save} bdrId={view.bdrId} />;
 }
