@@ -872,12 +872,26 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
   const [obs, setObs] = useState("");
   const [dataFuturo, setDataFuturo] = useState("");
   const [feedback, setFeedback] = useState(null);
+  const [editando, setEditando] = useState(false);
+
+  const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter(c => c.ativo);
+  const [formEdit, setFormEdit] = useState({
+    nome: lead.nome || "",
+    ...Object.fromEntries(campos.map(c => [c.id, lead[c.id] || ""])),
+  });
 
   const atualizarLead = updates => {
     const novoLeads = state.leads.map(l =>
       l.id===lead.id ? {...l,...updates,dataMovimentacao:new Date().toISOString()} : l
     );
     save({ ...state, leads: novoLeads });
+  };
+
+  const salvarEdicao = () => {
+    atualizarLead({ ...formEdit });
+    setEditando(false);
+    setFeedback("✓ Lead atualizado");
+    setTimeout(() => setFeedback(null), 1500);
   };
 
   const adicionarHistorico = texto => {
@@ -923,22 +937,67 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
 
       {/* Lead info */}
       <div className="bg-white rounded-xl p-4 shadow-sm">
-        {lead.coluna === "contato_futuro" && (
-          <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium mb-2 inline-block">Prioridade máxima</span>
-        )}
-        <p className="font-bold text-gray-900 text-lg">{lead.nome}</p>
-        {lead.empresa && <p className="text-sm text-gray-500">{lead.empresa}</p>}
-        <div className="flex gap-3 mt-2 flex-wrap">
-          {lead.linkedin  && <a href={toUrl(lead.linkedin)}  target="_blank" rel="noreferrer" className="text-blue-600 text-xs hover:underline">LinkedIn ↗</a>}
-          {lead.instagram && <a href={toUrl(lead.instagram)} target="_blank" rel="noreferrer" className="text-pink-500 text-xs hover:underline">Instagram ↗</a>}
-          {lead.site      && <a href={toUrl(lead.site)}      target="_blank" rel="noreferrer" className="text-green-600 text-xs hover:underline">Site ↗</a>}
-          {lead.telefone  && <span className="text-gray-600 text-xs">📞 {lead.telefone}</span>}
-          {lead.email     && <span className="text-gray-600 text-xs">✉️ {lead.email}</span>}
+        <div className="flex items-start justify-between">
+          <div className="flex-1 min-w-0">
+            {lead.coluna === "contato_futuro" && (
+              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium mb-2 inline-block">Prioridade máxima</span>
+            )}
+            <p className="font-bold text-gray-900 text-lg">{lead.nome}</p>
+            {lead.empresa && <p className="text-sm text-gray-500">{lead.empresa}</p>}
+            <div className="flex gap-3 mt-2 flex-wrap">
+              {lead.linkedin  && <a href={toUrl(lead.linkedin)}  target="_blank" rel="noreferrer" className="text-blue-600 text-xs hover:underline">LinkedIn ↗</a>}
+              {lead.instagram && <a href={toUrl(lead.instagram)} target="_blank" rel="noreferrer" className="text-pink-500 text-xs hover:underline">Instagram ↗</a>}
+              {lead.site      && <a href={toUrl(lead.site)}      target="_blank" rel="noreferrer" className="text-green-600 text-xs hover:underline">Site ↗</a>}
+              {lead.telefone  && <span className="text-gray-600 text-xs">📞 {lead.telefone}</span>}
+              {lead.email     && <span className="text-gray-600 text-xs">✉️ {lead.email}</span>}
+            </div>
+            {lead.dataContatoFuturo && (
+              <p className="text-xs text-purple-600 mt-2">📅 Data combinada: {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>
+            )}
+          </div>
+          <button onClick={() => setEditando(true)}
+            className="ml-3 shrink-0 text-gray-400 hover:text-blue-600 transition p-1 rounded-lg hover:bg-blue-50"
+            title="Editar informações do lead">
+            ✏️
+          </button>
         </div>
-        {lead.dataContatoFuturo && (
-          <p className="text-xs text-purple-600 mt-2">📅 Data combinada: {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>
-        )}
       </div>
+
+      {/* Modal de edição */}
+      {editando && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-end justify-center">
+          <div className="bg-white rounded-t-2xl w-full max-w-lg p-5 max-h-screen overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <p className="font-bold text-gray-900">Editar lead</p>
+              <button onClick={() => setEditando(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 block mb-0.5">Nome *</label>
+                <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  value={formEdit.nome||""} onChange={e => setFormEdit({...formEdit, nome: e.target.value})} />
+              </div>
+              {campos.map(campo => (
+                <div key={campo.id}>
+                  <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
+                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                    value={formEdit[campo.id]||""} onChange={e => setFormEdit({...formEdit, [campo.id]: e.target.value})} />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button onClick={() => setEditando(false)}
+                className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">
+                Cancelar
+              </button>
+              <button onClick={salvarEdicao}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-sm font-bold hover:bg-blue-700">
+                Salvar alterações
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Histórico */}
       {lead.historico && lead.historico.length > 0 && (
