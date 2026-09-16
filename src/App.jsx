@@ -19,8 +19,8 @@ const CADENCIA_PADRAO = {
   nome: "Cadência Outbound Padrão",
   tipo: "outbound",
   atividades: [
-    { id: "a1", canal: "ligacao",  dia: 0, tempoMin: 15, template: "Olá {{nome}}, aqui é da [sua empresa]. Estou ligando porque vi que a {{empresa}} atua no setor X e queria entender como vocês resolvem [dor]." },
-    { id: "a2", canal: "whatsapp", dia: 0, tempoMin: 5,  template: "Olá {{nome}}, tudo bem? Tentei contato por telefone. Sou da [sua empresa] e gostaria de conversar rapidamente sobre [proposta de valor]. Tem 10 minutos essa semana?" },
+    { id: "a1", canal: "ligacao",  dia: 0, tempoMin: 15, encadeada: false, template: "Olá {{nome}}, aqui é da [sua empresa]. Estou ligando porque vi que a {{empresa}} atua no setor X e queria entender como vocês resolvem [dor]." },
+    { id: "a2", canal: "whatsapp", dia: 0, tempoMin: 5,  encadeada: true,  template: "Olá {{nome}}, tudo bem? Tentei contato por telefone. Sou da [sua empresa] e gostaria de conversar rapidamente sobre [proposta de valor]. Tem 10 minutos essa semana?" },
     { id: "a3", canal: "email",    dia: 2, tempoMin: 10, template: "Assunto: {{empresa}} + [sua empresa]\n\nOlá {{nome}},\n\nEstou entrando em contato porque ajudamos empresas como a {{empresa}} a [resultado].\n\nFaz sentido conversarmos 15 minutos?" },
     { id: "a4", canal: "ligacao",  dia: 4, tempoMin: 15, template: "Segunda tentativa. Referenciar o e-mail enviado e o WhatsApp." },
     { id: "a5", canal: "linkedin", dia: 7, tempoMin: 5,  template: "Olá {{nome}}, vi seu perfil e gostaria de conectar. Trabalho com [área] e acredito que podemos trocar boas ideias." },
@@ -189,6 +189,14 @@ function proximaAtividade(lead, cadencia) {
   const idx = lead.atividadeIndex || 0;
   if (idx >= cadencia.atividades.length) return null;
   return { ...cadencia.atividades[idx], index: idx };
+}
+
+// A próxima atividade está encadeada? (executar no mesmo lead, em sequência)
+function proximaEncadeada(lead, cadencia) {
+  if (!cadencia?.atividades?.length) return false;
+  const prox = (lead.atividadeIndex || 0) + 1;
+  if (prox >= cadencia.atividades.length) return false;
+  return !!cadencia.atividades[prox].encadeada;
 }
 
 // Verifica se a atividade já está liberada pela data
@@ -536,7 +544,7 @@ function AdminCadencias({ state, save }) {
   };
 
   const addAtividade = () => {
-    setRascunho({ ...rascunho, atividades: [...rascunho.atividades, { id: uid(), canal: "ligacao", dia: 0, tempoMin: 10, template: "" }] });
+    setRascunho({ ...rascunho, atividades: [...rascunho.atividades, { id: uid(), canal: "ligacao", dia: 0, tempoMin: 10, encadeada: false, template: "" }] });
   };
 
   const updateAtividade = (idx, campo, valor) => {
@@ -611,7 +619,22 @@ function AdminCadencias({ state, save }) {
             {rascunho.atividades.map((ativ, idx) => {
               const canal = CANAIS[ativ.canal] || CANAIS.ligacao;
               return (
-                <div key={ativ.id || idx} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                <div key={ativ.id || idx}>
+                  {/* Conector de encadeamento */}
+                  {idx > 0 && (
+                    <div className="flex items-center gap-2 pl-3 py-2">
+                      <div className="w-px h-5 bg-slate-200 ml-3.5" />
+                      <label className="flex items-center gap-2 cursor-pointer group ml-2">
+                        <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
+                          checked={!!ativ.encadeada}
+                          onChange={e => updateAtividade(idx, "encadeada", e.target.checked)} />
+                        <span className={`text-xs transition ${ativ.encadeada ? "text-slate-700 font-medium" : "text-slate-400 group-hover:text-slate-600"}`}>
+                          Executar logo após a atividade anterior, com o mesmo lead
+                        </span>
+                      </label>
+                    </div>
+                  )}
+                  <div className={`border rounded-lg p-4 ${ativ.encadeada && idx > 0 ? "border-slate-900 bg-white" : "border-slate-200 bg-slate-50"}`}>
                   <div className="flex items-center gap-2 mb-3 flex-wrap">
                     <span className={`w-7 h-7 rounded-lg ${canal.cor} text-white flex items-center justify-center text-xs font-bold shrink-0`}>
                       {idx + 1}
@@ -624,9 +647,10 @@ function AdminCadencias({ state, save }) {
                     </select>
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs text-slate-400">Dia</span>
-                      <input type="number" min={0} max={60}
-                        className="w-14 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center bg-white focus:outline-none"
-                        value={ativ.dia} onChange={e => updateAtividade(idx, "dia", parseInt(e.target.value)||0)} />
+                      <input type="number" min={0} max={60} disabled={!!ativ.encadeada && idx > 0}
+                        className={`w-14 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none ${ativ.encadeada && idx>0 ? "bg-slate-100 text-slate-300" : "bg-white"}`}
+                        value={ativ.encadeada && idx>0 ? (rascunho.atividades[idx-1]?.dia ?? 0) : ativ.dia}
+                        onChange={e => updateAtividade(idx, "dia", parseInt(e.target.value)||0)} />
                     </div>
                     <div className="flex items-center gap-1.5">
                       <input type="number" min={1} max={120}
@@ -642,6 +666,7 @@ function AdminCadencias({ state, save }) {
                     placeholder="Roteiro/mensagem que o BDR deve seguir. Use {{nome}}, {{empresa}}, {{email}}, {{telefone}}"
                     value={ativ.template||""}
                     onChange={e => updateAtividade(idx, "template", e.target.value)} />
+                  </div>
                 </div>
               );
             })}
@@ -1300,6 +1325,142 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
   );
 }
 
+// Painel de IA que resume a ligação em tempo real.
+// Hoje trabalha sobre as notas digitadas/coladas pelo BDR.
+// Quando a API de telefonia estiver plugada, basta alimentar `transcricao`
+// com o texto vindo da transcrição da chamada.
+function PainelIALigacao({ lead, onResumo }) {
+  const [transcricao, setTranscricao] = useState("");
+  const [resumo, setResumo] = useState(null);
+  const [gerando, setGerando] = useState(false);
+  const [erro, setErro] = useState(null);
+  const [gravando, setGravando] = useState(false);
+
+  useEffect(() => {
+    setTranscricao(""); setResumo(null); setErro(null); setGravando(false);
+  }, [lead.id]);
+
+  const gerarResumo = async (texto) => {
+    const base = (texto ?? transcricao).trim();
+    if (!base) return;
+    setGerando(true); setErro(null);
+    try {
+      const r = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: `Você resume ligações de prospecção comercial B2B.
+
+Lead: ${lead.nome}${lead.empresa ? " — " + lead.empresa : ""}
+
+Transcrição/notas da ligação:
+"""
+${base}
+"""
+
+Responda APENAS com um JSON válido, sem markdown, sem preâmbulo, neste formato:
+{"resumo":"2 a 3 frases do que foi conversado","dores":["dor 1","dor 2"],"objecoes":["objeção 1"],"proximoPasso":"o que fazer a seguir","temperatura":"quente|morno|frio"}`
+          }],
+        }),
+      });
+      const data = await r.json();
+      const texto2 = (data.content || []).map(i => i.type === "text" ? i.text : "").join("").trim();
+      const limpo = texto2.replace(/```json|```/g, "").trim();
+      setResumo(JSON.parse(limpo));
+      setErro(null);
+    } catch (e) {
+      setErro("Não foi possível gerar o resumo agora.");
+    } finally {
+      setGerando(false);
+    }
+  };
+
+  // Simula a chegada da transcrição pela API de telefonia
+  const toggleGravacao = () => {
+    if (gravando) {
+      setGravando(false);
+      if (transcricao.trim()) gerarResumo();
+    } else {
+      setGravando(true); setResumo(null); setErro(null);
+    }
+  };
+
+  const tempCor = { quente: "bg-red-50 text-red-700 border-red-100", morno: "bg-amber-50 text-amber-700 border-amber-100", frio: "bg-sky-50 text-sky-700 border-sky-100" };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">🤖</span>
+          <p className="text-xs font-semibold text-slate-700">Resumo da ligação</p>
+        </div>
+        <button onClick={toggleGravacao}
+          className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${gravando ? "bg-red-500 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>
+          {gravando ? "● Em chamada" : "Iniciar"}
+        </button>
+      </div>
+
+      <div className="p-4">
+        <textarea
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs h-28 resize-none focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+          placeholder={gravando ? "A transcrição aparece aqui durante a chamada. Você também pode digitar notas." : "Cole ou digite as notas da conversa..."}
+          value={transcricao} onChange={e => setTranscricao(e.target.value)} />
+
+        <button onClick={() => gerarResumo()} disabled={gerando || !transcricao.trim()}
+          className={`w-full mt-2 py-2 rounded-lg text-xs font-semibold transition ${gerando || !transcricao.trim() ? "bg-slate-100 text-slate-300 cursor-not-allowed" : "bg-slate-900 text-white hover:bg-slate-800"}`}>
+          {gerando ? "Analisando..." : "Gerar resumo com IA"}
+        </button>
+
+        {erro && <p className="text-xs text-red-500 mt-2">{erro}</p>}
+
+        {resumo && (
+          <div className="mt-3 space-y-2.5">
+            {resumo.temperatura && (
+              <span className={`inline-block text-xs px-2 py-0.5 rounded-md border font-medium ${tempCor[resumo.temperatura] || tempCor.frio}`}>
+                Lead {resumo.temperatura}
+              </span>
+            )}
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Resumo</p>
+              <p className="text-xs text-slate-700 leading-relaxed">{resumo.resumo}</p>
+            </div>
+            {resumo.dores?.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Dores</p>
+                <ul className="text-xs text-slate-700 space-y-0.5">
+                  {resumo.dores.map((d,i) => <li key={i}>• {d}</li>)}
+                </ul>
+              </div>
+            )}
+            {resumo.objecoes?.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Objeções</p>
+                <ul className="text-xs text-slate-700 space-y-0.5">
+                  {resumo.objecoes.map((o,i) => <li key={i}>• {o}</li>)}
+                </ul>
+              </div>
+            )}
+            {resumo.proximoPasso && (
+              <div>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Próximo passo</p>
+                <p className="text-xs text-slate-700">{resumo.proximoPasso}</p>
+              </div>
+            )}
+            <button onClick={() => onResumo(resumo.resumo)}
+              className="w-full border border-slate-200 text-slate-600 py-2 rounded-lg text-xs font-medium hover:bg-slate-50 transition">
+              Usar como observação
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
   const [obs, setObs] = useState("");
   const [dataFuturo, setDataFuturo] = useState("");
@@ -1381,8 +1542,16 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
     const novaAcao = { id: uid(), bdrId: lead.bdrId, tipo: tipoAcao, leadId: lead.id, dataHora: agora };
     save({ ...state, leads: novoLeads, acoes: [...(state.acoes||[]), novaAcao] });
 
-    // Sempre tira o lead do ciclo atual para ir ao próximo
-    onNaoAtendeu(lead.id);
+    // Se a próxima atividade estiver encadeada e o lead continua ativo,
+    // mantém o mesmo lead na tela para executar a atividade seguinte.
+    const continuaAtivo = resultado === "etapa_realizada" || resultado === "pulou";
+    const encadeia = continuaAtivo && proximaEncadeada(lead, cadencia);
+    if (encadeia) {
+      setFeedback("Próxima atividade com o mesmo lead");
+      setTimeout(() => setFeedback(null), 1800);
+    } else {
+      onNaoAtendeu(lead.id);
+    }
   };
 
   const isContato = lead.coluna === "contato" || lead.coluna === "contato_futuro";
@@ -1540,6 +1709,11 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
                       {atividade.tempoMin} min
                     </span>
                   </div>
+                  {proximaEncadeada(lead, cadencia) && (
+                    <p className="text-white text-xs opacity-75 mt-2 pt-2 border-t border-white border-opacity-20">
+                      Em seguida: {CANAIS[cadencia.atividades[(lead.atividadeIndex||0)+1]?.canal]?.label} com este mesmo lead
+                    </p>
+                  )}
                 </div>
 
                 <div className="p-5">
@@ -1612,6 +1786,13 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 text-center">
                 <p className="text-sm text-slate-600 font-medium">Cadência concluída</p>
                 <p className="text-xs text-slate-400 mt-1">Todas as etapas foram executadas. Registre o resultado final.</p>
+              </div>
+            )}
+
+            {/* Painel de IA — só em ligações */}
+            {atividade && atividade.canal === "ligacao" && (
+              <div className="mt-4">
+                <PainelIALigacao lead={lead} onResumo={(txt) => setObs(o => o ? o + "\n" + txt : txt)} />
               </div>
             )}
 
