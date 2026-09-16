@@ -1,8 +1,31 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const STORAGE_KEY = "cadencepro-v10";
+const STORAGE_KEY = "cadencepro-v11";
 const MAX_LEADS = 20;
 const DIAS_POR_LEAD = 3;
+
+const CANAIS = {
+  ligacao:   { label: "Ligação",   icone: "📞", cor: "bg-blue-600",    corLight: "bg-blue-50 text-blue-700" },
+  whatsapp:  { label: "WhatsApp",  icone: "💬", cor: "bg-green-600",   corLight: "bg-green-50 text-green-700" },
+  email:     { label: "E-mail",    icone: "✉️", cor: "bg-orange-500",  corLight: "bg-orange-50 text-orange-700" },
+  linkedin:  { label: "LinkedIn",  icone: "💼", cor: "bg-sky-700",     corLight: "bg-sky-50 text-sky-700" },
+  instagram: { label: "Instagram", icone: "📷", cor: "bg-pink-600",    corLight: "bg-pink-50 text-pink-700" },
+  facebook:  { label: "Facebook",  icone: "👥", cor: "bg-blue-800",    corLight: "bg-blue-50 text-blue-800" },
+  tiktok:    { label: "TikTok",    icone: "🎵", cor: "bg-neutral-900", corLight: "bg-neutral-100 text-neutral-800" },
+};
+
+const CADENCIA_PADRAO = {
+  id: "cad_padrao",
+  nome: "Cadência Outbound Padrão",
+  tipo: "outbound",
+  atividades: [
+    { id: "a1", canal: "ligacao",  dia: 0, tempoMin: 15, template: "Olá {{nome}}, aqui é da [sua empresa]. Estou ligando porque vi que a {{empresa}} atua no setor X e queria entender como vocês resolvem [dor]." },
+    { id: "a2", canal: "whatsapp", dia: 0, tempoMin: 5,  template: "Olá {{nome}}, tudo bem? Tentei contato por telefone. Sou da [sua empresa] e gostaria de conversar rapidamente sobre [proposta de valor]. Tem 10 minutos essa semana?" },
+    { id: "a3", canal: "email",    dia: 2, tempoMin: 10, template: "Assunto: {{empresa}} + [sua empresa]\n\nOlá {{nome}},\n\nEstou entrando em contato porque ajudamos empresas como a {{empresa}} a [resultado].\n\nFaz sentido conversarmos 15 minutos?" },
+    { id: "a4", canal: "ligacao",  dia: 4, tempoMin: 15, template: "Segunda tentativa. Referenciar o e-mail enviado e o WhatsApp." },
+    { id: "a5", canal: "linkedin", dia: 7, tempoMin: 5,  template: "Olá {{nome}}, vi seu perfil e gostaria de conectar. Trabalho com [área] e acredito que podemos trocar boas ideias." },
+  ],
+};
 
 const COLUNAS = {
   enriquecimento: { label: "Enriquecimento",     bg: "bg-blue-50",   border: "border-blue-200",   dot: "bg-blue-500"   },
@@ -30,7 +53,8 @@ const INITIAL = {
   ],
   leads: [],
   acoes: [],
-  config: { tempos: TEMPO_PADRAO, camposEnriquecimento: CAMPOS_PADRAO },
+  cadencias: [CADENCIA_PADRAO],
+  config: { tempos: TEMPO_PADRAO, camposEnriquecimento: CAMPOS_PADRAO, cadenciaAtiva: "cad_padrao" },
 };
 
 function uid() { return Math.random().toString(36).substr(2, 9); }
@@ -130,6 +154,59 @@ function dentroDoRange(iso, inicio, fim) {
   return true;
 }
 
+function calcularRanking(bdrs, acoes, data) {
+  const hoje = data || new Date().toISOString().split("T")[0];
+  return calcularRankingRange(bdrs, acoes, hoje, hoje);
+}
+
+function calcularRankingRange(bdrs, acoes, inicio, fim) {
+  const filtradas = acoes.filter(a => dentroDoRange(a.dataHora, inicio, fim));
+  return bdrs.map(bdr => {
+    const ab = filtradas.filter(a => a.bdrId === bdr.id);
+    const agendou = ab.filter(a => a.tipo === "agendado").length;
+    const etapas = ab.filter(a => a.tipo === "etapa_realizada").length;
+    const pulou = ab.filter(a => a.tipo === "pulou").length;
+    return { ...bdr, agendou, etapas, pulou, pontos: agendou*3 + etapas*1 + pulou*0.5 };
+  }).sort((a,b) => b.pontos - a.pontos);
+}
+
+function toWhatsApp(telefone, msg) {
+  if (!telefone) return "";
+  const nums = telefone.replace(/\D/g, "");
+  const com55 = nums.startsWith("55") ? nums : "55" + nums;
+  const texto = msg ? `?text=${encodeURIComponent(msg)}` : "";
+  return `https://wa.me/${com55}${texto}`;
+}
+
+function getCadencia(state, cadenciaId) {
+  const id = cadenciaId || state.config?.cadenciaAtiva || "cad_padrao";
+  return (state.cadencias || [CADENCIA_PADRAO]).find(c => c.id === id) || CADENCIA_PADRAO;
+}
+
+// Retorna a próxima atividade pendente da cadência para o lead
+function proximaAtividade(lead, cadencia) {
+  if (!cadencia?.atividades?.length) return null;
+  const idx = lead.atividadeIndex || 0;
+  if (idx >= cadencia.atividades.length) return null;
+  return { ...cadencia.atividades[idx], index: idx };
+}
+
+// Verifica se a atividade já está liberada pela data
+function atividadeLiberada(lead, atividade) {
+  if (!atividade) return false;
+  const diasCorridos = diasDesde(lead.dataCriacao);
+  return diasCorridos >= (atividade.dia || 0);
+}
+
+function aplicarTemplate(texto, lead) {
+  if (!texto) return "";
+  return texto
+    .replace(/\{\{nome\}\}/g, lead.nome || "")
+    .replace(/\{\{empresa\}\}/g, lead.empresa || "")
+    .replace(/\{\{email\}\}/g, lead.email || "")
+    .replace(/\{\{telefone\}\}/g, lead.telefone || "");
+}
+
 // ─── HOME ────────────────────────────────────────────────────────────────────
 function Home({ setView, state }) {
   return (
@@ -157,19 +234,67 @@ function Home({ setView, state }) {
 // ─── BDR PRONTO ──────────────────────────────────────────────────────────────
 function BDRPronto({ bdrId, state, setView }) {
   const bdr = state.bdrs.find(b => b.id === bdrId);
+  const ranking = calcularRanking(state.bdrs, state.acoes || []);
+  const medalhas = ["🥇", "🥈", "🥉"];
+
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-md p-10 w-full max-w-xs text-center">
-        <p className="text-gray-400 text-sm mb-1">CadencePro</p>
-        <h2 className="text-xl font-bold text-gray-900 mb-2">{bdr?.nome}</h2>
-        <p className="text-gray-500 text-sm mb-8">Está preparado para iniciar?</p>
+    <div className="min-h-screen bg-gray-100 flex flex-col">
+      {/* Saudação no canto superior esquerdo */}
+      <div className="p-5">
+        <p className="text-xs text-gray-400">CadencePro</p>
+        <p className="text-lg font-bold text-gray-900">Olá, {bdr?.nome}!</p>
+        <p className="text-sm text-gray-500">Pronto para começar?</p>
         <button onClick={() => setView({ tela: "bdr", bdrId })}
-          className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-base hover:bg-blue-700 transition">
-          Sim, pode começar!
+          className="mt-3 bg-blue-600 text-white px-5 py-2 rounded-xl font-semibold hover:bg-blue-700 transition text-sm">
+          Sim, pode começar! →
         </button>
-        <button onClick={() => setView({ tela: "home" })} className="w-full mt-3 text-sm text-gray-400 hover:text-gray-600 py-2">
+        <button onClick={() => setView({ tela: "home" })} className="block mt-2 text-xs text-gray-400 hover:text-gray-600">
           Voltar
         </button>
+      </div>
+
+      {/* Ranking no meio da tela */}
+      <div className="flex-1 flex items-center justify-center px-4 pb-8">
+        <div className="w-full max-w-sm">
+          <p className="text-center text-sm font-bold text-gray-700 mb-1">🏆 Ranking do dia</p>
+          <p className="text-center text-xs text-gray-400 mb-4">{new Date().toLocaleDateString("pt-BR")}</p>
+          <div className="space-y-3">
+            {ranking.map((b, i) => {
+              const meta = state.config?.metas?.[b.id] || 0;
+              const pct = meta > 0 ? Math.min((b.agendou / meta) * 100, 100) : 0;
+              const isEu = b.id === bdrId;
+              return (
+                <div key={b.id} className={`bg-white rounded-xl p-4 shadow-sm border-2 ${isEu ? "border-blue-400" : "border-transparent"}`}>
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">{medalhas[i] || `${i+1}º`}</span>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="font-semibold text-gray-800 text-sm">{b.nome} {isEu && <span className="text-xs text-blue-500">(você)</span>}</p>
+                        <p className="text-xs font-bold text-gray-600">{b.pontos.toFixed(1)} pts</p>
+                      </div>
+                      <div className="flex gap-3 mt-1 text-xs text-gray-500">
+                        <span>✅ {b.agendou} agend.</span>
+                        <span>✓ {b.etapas} etapas</span>
+                      </div>
+                      {meta > 0 && (
+                        <div className="mt-2">
+                          <div className="flex justify-between text-xs text-gray-400 mb-0.5">
+                            <span>Meta de agendamentos</span>
+                            <span>{b.agendou}/{meta}</span>
+                          </div>
+                          <div className="h-1.5 bg-gray-100 rounded-full">
+                            <div className={`h-1.5 rounded-full ${pct >= 100 ? "bg-green-500" : "bg-blue-500"}`}
+                              style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -185,7 +310,7 @@ function Admin({ state, save, setView }) {
         <button onClick={() => setView({ tela: "home" })} className="text-sm text-gray-400 hover:text-gray-700">Sair</button>
       </div>
       <div className="bg-white border-b flex px-4">
-        {[["kanban","Kanban"],["bdrs","BDRs"],["config","Configurações"]].map(([id,label]) => (
+        {[["kanban","Kanban"],["cadencias","Cadências"],["ranking","Ranking"],["bdrs","BDRs"],["config","Configurações"]].map(([id,label]) => (
           <button key={id} onClick={() => setTab(id)}
             className={`px-5 py-3 text-sm font-medium border-b-2 -mb-px transition ${tab===id?"border-blue-600 text-blue-600":"border-transparent text-gray-500 hover:text-gray-700"}`}>
             {label}
@@ -193,9 +318,11 @@ function Admin({ state, save, setView }) {
         ))}
       </div>
       <div className="p-4">
-        {tab === "kanban" && <AdminKanban state={state} save={save} />}
-        {tab === "bdrs"   && <AdminBDRs   state={state} save={save} />}
-        {tab === "config" && <AdminConfig  state={state} save={save} />}
+        {tab === "kanban"    && <AdminKanban state={state} save={save} />}
+        {tab === "cadencias" && <AdminCadencias state={state} save={save} />}
+        {tab === "ranking"   && <AdminRanking state={state} />}
+        {tab === "bdrs"      && <AdminBDRs   state={state} save={save} />}
+        {tab === "config"    && <AdminConfig  state={state} save={save} />}
       </div>
     </div>
   );
@@ -385,30 +512,309 @@ function AdminKanban({ state, save }) {
   );
 }
 
+function AdminCadencias({ state, save }) {
+  const cadencias = state.cadencias || [CADENCIA_PADRAO];
+  const [editandoId, setEditandoId] = useState(cadencias[0]?.id);
+  const original = cadencias.find(c => c.id === editandoId) || cadencias[0];
+  const [rascunho, setRascunho] = useState(original);
+  const [salvo, setSalvo] = useState(false);
+
+  useEffect(() => {
+    const c = cadencias.find(x => x.id === editandoId) || cadencias[0];
+    setRascunho(c);
+    setSalvo(false);
+  }, [editandoId]);
+
+  const alterado = JSON.stringify(rascunho) !== JSON.stringify(original);
+
+  const salvarCadencia = () => {
+    const existe = cadencias.some(c => c.id === rascunho.id);
+    const novas = existe ? cadencias.map(c => c.id === rascunho.id ? rascunho : c) : [...cadencias, rascunho];
+    save({ ...state, cadencias: novas });
+    setSalvo(true);
+    setTimeout(() => setSalvo(false), 2000);
+  };
+
+  const addAtividade = () => {
+    setRascunho({ ...rascunho, atividades: [...rascunho.atividades, { id: uid(), canal: "ligacao", dia: 0, tempoMin: 10, template: "" }] });
+  };
+
+  const updateAtividade = (idx, campo, valor) => {
+    setRascunho({ ...rascunho, atividades: rascunho.atividades.map((a,i) => i===idx ? { ...a, [campo]: valor } : a) });
+  };
+
+  const removeAtividade = (idx) => {
+    setRascunho({ ...rascunho, atividades: rascunho.atividades.filter((_,i) => i!==idx) });
+  };
+
+  const novaCadencia = () => {
+    const nova = { id: uid(), nome: "Nova cadência", tipo: "outbound", atividades: [] };
+    save({ ...state, cadencias: [...cadencias, nova] });
+    setEditandoId(nova.id);
+  };
+
+  const removerCadencia = () => {
+    if (cadencias.length <= 1) return;
+    const novas = cadencias.filter(c => c.id !== rascunho.id);
+    save({ ...state, cadencias: novas, config: { ...state.config, cadenciaAtiva: novas[0].id } });
+    setEditandoId(novas[0].id);
+  };
+
+  const definirAtiva = (id) => save({ ...state, config: { ...state.config, cadenciaAtiva: id } });
+  const ativa = state.config?.cadenciaAtiva || "cad_padrao";
+
+  return (
+    <div className="max-w-3xl pb-24">
+      <div className="flex items-center gap-2 mb-5 flex-wrap">
+        {cadencias.map(c => (
+          <button key={c.id} onClick={() => setEditandoId(c.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition border ${editandoId===c.id?"bg-slate-900 text-white border-slate-900":"bg-white text-slate-600 border-slate-200 hover:border-slate-300"}`}>
+            {c.nome}
+            {ativa === c.id && <span className="ml-2 text-xs text-emerald-400">ativa</span>}
+          </button>
+        ))}
+        <button onClick={novaCadencia} className="px-4 py-2 rounded-lg text-sm border border-dashed border-slate-300 text-slate-500 hover:border-slate-400 hover:text-slate-700">+ Nova</button>
+      </div>
+
+      {rascunho && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <div className="flex items-center gap-3 mb-5 pb-5 border-b border-slate-100">
+            <div className="flex-1">
+              <label className="text-xs text-slate-400 block mb-1">Nome da cadência</label>
+              <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+                value={rascunho.nome} onChange={e => setRascunho({ ...rascunho, nome: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Tipo</label>
+              <select className="border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none"
+                value={rascunho.tipo} onChange={e => setRascunho({ ...rascunho, tipo: e.target.value })}>
+                <option value="outbound">Outbound</option>
+                <option value="inbound">Inbound</option>
+              </select>
+            </div>
+            {ativa !== rascunho.id && (
+              <button onClick={() => definirAtiva(rascunho.id)}
+                className="self-end text-xs bg-emerald-600 text-white px-3 py-2.5 rounded-lg hover:bg-emerald-700 font-medium shrink-0">
+                Tornar ativa
+              </button>
+            )}
+            {cadencias.length > 1 && (
+              <button onClick={removerCadencia}
+                className="self-end text-xs text-red-500 border border-red-200 px-3 py-2.5 rounded-lg hover:bg-red-50 shrink-0">
+                Excluir
+              </button>
+            )}
+          </div>
+
+          <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wider">Sequência de atividades</p>
+          <div className="space-y-3">
+            {rascunho.atividades.map((ativ, idx) => {
+              const canal = CANAIS[ativ.canal] || CANAIS.ligacao;
+              return (
+                <div key={ativ.id || idx} className="border border-slate-200 rounded-lg p-4 bg-slate-50">
+                  <div className="flex items-center gap-2 mb-3 flex-wrap">
+                    <span className={`w-7 h-7 rounded-lg ${canal.cor} text-white flex items-center justify-center text-xs font-bold shrink-0`}>
+                      {idx + 1}
+                    </span>
+                    <select className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white focus:outline-none"
+                      value={ativ.canal} onChange={e => updateAtividade(idx, "canal", e.target.value)}>
+                      {Object.entries(CANAIS).map(([k,c]) => (
+                        <option key={k} value={k}>{c.icone} {c.label}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-400">Dia</span>
+                      <input type="number" min={0} max={60}
+                        className="w-14 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center bg-white focus:outline-none"
+                        value={ativ.dia} onChange={e => updateAtividade(idx, "dia", parseInt(e.target.value)||0)} />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input type="number" min={1} max={120}
+                        className="w-14 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center bg-white focus:outline-none"
+                        value={ativ.tempoMin} onChange={e => updateAtividade(idx, "tempoMin", parseInt(e.target.value)||1)} />
+                      <span className="text-xs text-slate-400">min</span>
+                    </div>
+                    <button onClick={() => removeAtividade(idx)}
+                      className="ml-auto text-slate-300 hover:text-red-500 text-sm shrink-0">✕</button>
+                  </div>
+                  <textarea
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs h-24 resize-none bg-white focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+                    placeholder="Roteiro/mensagem que o BDR deve seguir. Use {{nome}}, {{empresa}}, {{email}}, {{telefone}}"
+                    value={ativ.template||""}
+                    onChange={e => updateAtividade(idx, "template", e.target.value)} />
+                </div>
+              );
+            })}
+            {rascunho.atividades.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-8 border border-dashed border-slate-200 rounded-lg">Nenhuma atividade ainda</p>
+            )}
+          </div>
+
+          <button onClick={addAtividade}
+            className="w-full mt-4 border border-dashed border-slate-300 text-slate-600 py-3 rounded-lg text-sm font-medium hover:border-slate-400 hover:bg-slate-50 transition">
+            + Adicionar atividade
+          </button>
+
+          <p className="text-xs text-slate-400 mt-4">
+            Variáveis: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">{"{{nome}}"}</code> <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">{"{{empresa}}"}</code> <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">{"{{email}}"}</code> <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">{"{{telefone}}"}</code>
+          </p>
+        </div>
+      )}
+
+      {/* Barra fixa de salvar */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-3 flex items-center justify-between z-40">
+        <p className="text-xs text-slate-400">
+          {salvo ? <span className="text-emerald-600 font-medium">Alterações salvas</span> : alterado ? "Você tem alterações não salvas" : "Nenhuma alteração pendente"}
+        </p>
+        <button onClick={salvarCadencia} disabled={!alterado}
+          className={`px-8 py-2.5 rounded-lg text-sm font-semibold transition ${alterado?"bg-slate-900 text-white hover:bg-slate-800":"bg-slate-100 text-slate-300 cursor-not-allowed"}`}>
+          Salvar cadência
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminRanking({ state }) {
+  const hoje = new Date().toISOString().split("T")[0];
+  const [dataInicio, setDataInicio] = useState(hoje);
+  const [dataFim, setDataFim] = useState(hoje);
+  const ranking = calcularRankingRange(state.bdrs, state.acoes || [], dataInicio, dataFim);
+  const medalhas = ["🥇", "🥈", "🥉"];
+  const dias = Math.max(1, Math.round((new Date(dataFim) - new Date(dataInicio)) / 86400000) + 1);
+
+  return (
+    <div className="max-w-2xl">
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <h2 className="font-semibold text-slate-800">Ranking de BDRs</h2>
+        <div className="flex items-center gap-2 bg-white rounded-lg px-3 py-2 border border-slate-200">
+          <label className="text-xs text-slate-400">De</label>
+          <input type="date" value={dataInicio} onChange={e => setDataInicio(e.target.value)}
+            className="border-0 text-sm text-slate-700 focus:outline-none" />
+          <label className="text-xs text-slate-400 ml-2">Até</label>
+          <input type="date" value={dataFim} onChange={e => setDataFim(e.target.value)}
+            className="border-0 text-sm text-slate-700 focus:outline-none" />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {ranking.map((bdr, i) => {
+          const metaDia = state.config?.metas?.[bdr.id] || 0;
+          const metaPeriodo = metaDia * dias;
+          const pct = metaPeriodo > 0 ? Math.min((bdr.agendou / metaPeriodo) * 100, 100) : 0;
+          return (
+            <div key={bdr.id} className="bg-white rounded-xl p-4 border border-slate-200">
+              <div className="flex items-center gap-4">
+                <span className="text-2xl w-8 text-center shrink-0">{medalhas[i] || `${i+1}º`}</span>
+                {bdr.foto ? (
+                  <img src={bdr.foto} alt={bdr.nome} className="w-12 h-12 rounded-full object-cover shrink-0 border border-slate-200" />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 font-bold shrink-0">
+                    {bdr.nome?.charAt(0)?.toUpperCase()}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-slate-800">{bdr.nome}</p>
+                    <p className="text-sm font-bold text-slate-600">{bdr.pontos.toFixed(1)} pts</p>
+                  </div>
+                  <div className="flex gap-4 mt-1 text-xs text-slate-500">
+                    <span>{bdr.agendou} agendamentos</span>
+                    <span>{bdr.etapas} etapas</span>
+                    <span>{bdr.pulou} pulados</span>
+                  </div>
+                  {metaPeriodo > 0 && (
+                    <div className="mt-2">
+                      <div className="flex justify-between text-xs text-slate-400 mb-1">
+                        <span>Meta do período</span>
+                        <span className={bdr.agendou >= metaPeriodo ? "text-emerald-600 font-semibold" : ""}>{bdr.agendou}/{metaPeriodo}</span>
+                      </div>
+                      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all ${pct >= 100 ? "bg-emerald-500" : "bg-slate-900"}`}
+                          style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AdminBDRs({ state, save }) {
   const [nome, setNome] = useState("");
+  const [foto, setFoto] = useState("");
+
+  const lerFoto = (file, cb) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => cb(e.target.result);
+    reader.readAsDataURL(file);
+  };
+
   const addBDR = () => {
     if (!nome.trim()) return;
-    save({ ...state, bdrs: [...state.bdrs, { id: uid(), nome: nome.trim(), tempoPausadoMs: 0 }] });
-    setNome("");
+    save({ ...state, bdrs: [...state.bdrs, { id: uid(), nome: nome.trim(), foto, tempoPausadoMs: 0 }] });
+    setNome(""); setFoto("");
   };
+
+  const trocarFoto = (bdrId, dataUrl) => {
+    save({ ...state, bdrs: state.bdrs.map(b => b.id === bdrId ? { ...b, foto: dataUrl } : b) });
+  };
+
   const removeBDR = id => save({ ...state, bdrs: state.bdrs.filter(b=>b.id!==id), leads: state.leads.filter(l=>l.bdrId!==id) });
+
   return (
-    <div className="max-w-md">
-      <h2 className="font-semibold text-gray-800 mb-3">Adicionar BDR</h2>
-      <div className="bg-white rounded-xl p-4 shadow-sm mb-5 flex gap-3">
-        <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm" placeholder="Nome do BDR"
-          value={nome} onChange={e=>setNome(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addBDR()} />
-        <button onClick={addBDR} className="bg-blue-600 text-white px-4 rounded-lg text-sm font-semibold hover:bg-blue-700">Adicionar</button>
+    <div className="max-w-lg">
+      <h2 className="font-semibold text-slate-800 mb-3">Adicionar BDR</h2>
+      <div className="bg-white rounded-xl p-5 border border-slate-200 mb-6">
+        <div className="flex items-center gap-4">
+          <label className="cursor-pointer shrink-0">
+            {foto ? (
+              <img src={foto} alt="" className="w-16 h-16 rounded-full object-cover border-2 border-slate-200" />
+            ) : (
+              <div className="w-16 h-16 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center text-slate-400 text-xs text-center leading-tight hover:border-slate-400 transition">
+                Foto
+              </div>
+            )}
+            <input type="file" accept="image/*" className="hidden"
+              onChange={e => lerFoto(e.target.files?.[0], setFoto)} />
+          </label>
+          <div className="flex-1">
+            <label className="text-xs text-slate-400 block mb-1">Nome do BDR</label>
+            <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+              value={nome} onChange={e=>setNome(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addBDR()} />
+          </div>
+        </div>
+        <button onClick={addBDR} className="w-full mt-4 bg-slate-900 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-800">
+          Adicionar BDR
+        </button>
       </div>
+
+      <h2 className="font-semibold text-slate-800 mb-3">BDRs cadastrados</h2>
       <div className="space-y-2">
         {state.bdrs.map(bdr => (
-          <div key={bdr.id} className="bg-white rounded-xl px-4 py-3 shadow-sm flex items-center justify-between">
-            <div>
-              <p className="font-medium text-gray-800 text-sm">{bdr.nome}</p>
-              <p className="text-xs text-gray-400">{leadsAtivosBDR(state.leads, bdr.id).length} leads ativos</p>
+          <div key={bdr.id} className="bg-white rounded-xl px-4 py-3 border border-slate-200 flex items-center gap-3">
+            <label className="cursor-pointer shrink-0">
+              {bdr.foto ? (
+                <img src={bdr.foto} alt="" className="w-11 h-11 rounded-full object-cover border border-slate-200" />
+              ) : (
+                <div className="w-11 h-11 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 font-bold">
+                  {bdr.nome?.charAt(0)?.toUpperCase()}
+                </div>
+              )}
+              <input type="file" accept="image/*" className="hidden"
+                onChange={e => lerFoto(e.target.files?.[0], url => trocarFoto(bdr.id, url))} />
+            </label>
+            <div className="flex-1">
+              <p className="font-medium text-slate-800 text-sm">{bdr.nome}</p>
+              <p className="text-xs text-slate-400">{leadsAtivosBDR(state.leads, bdr.id).length} leads ativos</p>
             </div>
-            <button onClick={()=>removeBDR(bdr.id)} className="text-red-400 text-xs hover:text-red-600">Remover</button>
+            <button onClick={()=>removeBDR(bdr.id)} className="text-slate-300 hover:text-red-500 text-xs">Remover</button>
           </div>
         ))}
       </div>
@@ -417,15 +823,8 @@ function AdminBDRs({ state, save }) {
 }
 
 function AdminConfig({ state, save }) {
-  const tempos = state.config?.tempos || TEMPO_PADRAO;
-  const [formTempos, setFormTempos] = useState(tempos);
   const campos = state.config?.camposEnriquecimento || CAMPOS_PADRAO;
   const [novoCampo, setNovoCampo] = useState("");
-
-  const salvarTempos = () => {
-    save({ ...state, config: { ...state.config, tempos: formTempos } });
-    alert("Tempos salvos!");
-  };
 
   const toggleCampo = (id, prop) => {
     const novos = campos.map(c => c.id === id ? { ...c, [prop]: !c[prop] } : c);
@@ -436,8 +835,7 @@ function AdminConfig({ state, save }) {
     if (!novoCampo.trim()) return;
     const id = novoCampo.trim().toLowerCase().replace(/\s+/g,"_");
     if (campos.find(c=>c.id===id)) return;
-    const novos = [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false, obrigatorio: false }];
-    save({ ...state, config: { ...state.config, camposEnriquecimento: novos } });
+    save({ ...state, config: { ...state.config, camposEnriquecimento: [...campos, { id, label: novoCampo.trim(), ativo: true, fixo: false, obrigatorio: false }] } });
     setNovoCampo("");
   };
 
@@ -446,48 +844,54 @@ function AdminConfig({ state, save }) {
   };
 
   return (
-    <div className="max-w-sm space-y-6">
+    <div className="max-w-lg space-y-6">
+      {/* Meta diária por BDR */}
       <div>
-        <h2 className="font-semibold text-gray-800 mb-1">Tempo por etapa</h2>
-        <p className="text-xs text-gray-400 mb-3">Minutos que o BDR tem para cada tarefa.</p>
-        <div className="bg-white rounded-xl p-4 shadow-sm space-y-4">
-          {[["enriquecimento","Enriquecimento de lead"],["contato","Cadência de contato"]].map(([key,label])=>(
-            <div key={key} className="flex items-center justify-between gap-4">
-              <label className="text-sm text-gray-700 flex-1">{label}</label>
-              <div className="flex items-center gap-2">
-                <input type="number" min={1} max={60}
-                  className="w-16 border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center"
-                  value={formTempos[key]||""} onChange={e=>setFormTempos({...formTempos,[key]:parseInt(e.target.value)||1})} />
-                <span className="text-xs text-gray-400">min</span>
+        <h2 className="font-semibold text-slate-800 mb-1">Meta diária de agendamentos</h2>
+        <p className="text-xs text-slate-400 mb-3">Quantos agendamentos cada BDR deve fazer por dia.</p>
+        <div className="bg-white rounded-xl p-5 border border-slate-200 space-y-3">
+          {state.bdrs.map(bdr => {
+            const metaAtual = state.config?.metas?.[bdr.id] || 0;
+            return (
+              <div key={bdr.id} className="flex items-center justify-between gap-4">
+                <label className="text-sm text-slate-700 flex-1">{bdr.nome}</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={100}
+                    className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none"
+                    value={metaAtual}
+                    onChange={e => {
+                      const novasMetas = { ...(state.config?.metas || {}), [bdr.id]: parseInt(e.target.value) || 0 };
+                      save({ ...state, config: { ...state.config, metas: novasMetas } });
+                    }} />
+                  <span className="text-xs text-slate-400 w-20">agend./dia</span>
+                </div>
               </div>
-            </div>
-          ))}
-          <button onClick={salvarTempos} className="w-full bg-blue-600 text-white py-2 rounded-lg text-sm font-semibold hover:bg-blue-700">Salvar tempos</button>
+            );
+          })}
         </div>
       </div>
 
+      {/* Campos de enriquecimento */}
       <div>
-        <h2 className="font-semibold text-gray-800 mb-1">Campos de Enriquecimento</h2>
-        <p className="text-xs text-gray-400 mb-3">Ative os campos e defina quais são obrigatórios.</p>
-        <div className="bg-white rounded-xl p-4 shadow-sm">
-          {/* Cabeçalho */}
-          <div className="flex items-center mb-3 pb-2 border-b border-gray-100">
-            <span className="text-xs text-gray-400 flex-1">Campo</span>
-            <span className="text-xs text-gray-400 w-16 text-center">Ativo</span>
-            <span className="text-xs text-gray-400 w-24 text-center">Obrigatório</span>
+        <h2 className="font-semibold text-slate-800 mb-1">Campos de Enriquecimento</h2>
+        <p className="text-xs text-slate-400 mb-3">Ative os campos e defina quais são obrigatórios.</p>
+        <div className="bg-white rounded-xl p-5 border border-slate-200">
+          <div className="flex items-center mb-3 pb-2 border-b border-slate-100">
+            <span className="text-xs text-slate-400 flex-1">Campo</span>
+            <span className="text-xs text-slate-400 w-16 text-center">Ativo</span>
+            <span className="text-xs text-slate-400 w-24 text-center">Obrigatório</span>
             <span className="w-8" />
           </div>
 
-          {/* Nome — sempre ativo e obrigatório */}
-          <div className="flex items-center py-2 border-b border-gray-50">
-            <span className="text-sm text-gray-700 flex-1">Nome</span>
+          <div className="flex items-center py-2.5 border-b border-slate-50">
+            <span className="text-sm text-slate-700 flex-1">Nome</span>
             <div className="w-16 flex justify-center">
-              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1 cursor-not-allowed opacity-70">
+              <div className="w-10 h-6 rounded-full bg-slate-900 flex items-center justify-end px-1 opacity-50">
                 <div className="w-4 h-4 bg-white rounded-full" />
               </div>
             </div>
             <div className="w-24 flex justify-center">
-              <div className="w-10 h-6 rounded-full bg-blue-600 flex items-center justify-end px-1 cursor-not-allowed opacity-70">
+              <div className="w-10 h-6 rounded-full bg-slate-900 flex items-center justify-end px-1 opacity-50">
                 <div className="w-4 h-4 bg-white rounded-full" />
               </div>
             </div>
@@ -495,36 +899,36 @@ function AdminConfig({ state, save }) {
           </div>
 
           {campos.map(campo => (
-            <div key={campo.id} className="flex items-center py-2 border-b border-gray-50">
-              <span className={`text-sm flex-1 ${campo.ativo?"text-gray-800":"text-gray-400"}`}>{campo.label}</span>
+            <div key={campo.id} className="flex items-center py-2.5 border-b border-slate-50">
+              <span className={`text-sm flex-1 ${campo.ativo?"text-slate-800":"text-slate-300"}`}>{campo.label}</span>
               <div className="w-16 flex justify-center">
                 <button onClick={() => toggleCampo(campo.id, "ativo")}
-                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo?"bg-blue-600 justify-end":"bg-gray-200 justify-start"}`}>
-                  <div className="w-4 h-4 bg-white rounded-full shadow" />
+                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${campo.ativo?"bg-slate-900 justify-end":"bg-slate-200 justify-start"}`}>
+                  <div className="w-4 h-4 bg-white rounded-full shadow-sm" />
                 </button>
               </div>
               <div className="w-24 flex justify-center">
                 <button onClick={() => campo.ativo && toggleCampo(campo.id, "obrigatorio")}
-                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${!campo.ativo?"opacity-30 cursor-not-allowed":""} ${campo.obrigatorio&&campo.ativo?"bg-red-500 justify-end":"bg-gray-200 justify-start"}`}>
-                  <div className="w-4 h-4 bg-white rounded-full shadow" />
+                  className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${!campo.ativo?"opacity-30 cursor-not-allowed":""} ${campo.obrigatorio&&campo.ativo?"bg-red-500 justify-end":"bg-slate-200 justify-start"}`}>
+                  <div className="w-4 h-4 bg-white rounded-full shadow-sm" />
                 </button>
               </div>
               <div className="w-8 flex justify-center">
                 {!campo.fixo && (
-                  <button onClick={() => removerCampo(campo.id)} className="text-red-400 text-xs hover:text-red-600">✕</button>
+                  <button onClick={() => removerCampo(campo.id)} className="text-slate-300 hover:text-red-500 text-xs">✕</button>
                 )}
               </div>
             </div>
           ))}
 
-          <div className="pt-3">
-            <p className="text-xs text-gray-500 mb-2 font-medium">Adicionar campo personalizado:</p>
+          <div className="pt-4">
+            <p className="text-xs text-slate-400 mb-2">Adicionar campo personalizado</p>
             <div className="flex gap-2">
-              <input className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm"
+              <input className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
                 placeholder="Ex: TikTok, Nome do decisor..."
                 value={novoCampo} onChange={e=>setNovoCampo(e.target.value)}
                 onKeyDown={e=>e.key==="Enter"&&adicionarCampo()} />
-              <button onClick={adicionarCampo} className="bg-gray-800 text-white px-3 rounded-lg text-sm font-semibold hover:bg-gray-700">+</button>
+              <button onClick={adicionarCampo} className="bg-slate-900 text-white px-4 rounded-lg text-sm font-semibold hover:bg-slate-800">+</button>
             </div>
           </div>
         </div>
@@ -604,12 +1008,32 @@ function BDR({ bdrId, state, save, setView }) {
           <div className={`h-1.5 rounded-full transition-all ${ativos.length>=MAX_LEADS?"bg-green-500":"bg-blue-500"}`}
             style={{width:`${(ativos.length/MAX_LEADS)*100}%`}} />
         </div>
+        {/* Meta diária */}
+        {(() => {
+          const meta = state.config?.metas?.[bdrId] || 0;
+          if (!meta) return null;
+          const hoje = new Date().toISOString().split("T")[0];
+          const agendosHoje = (state.acoes||[]).filter(a => a.bdrId===bdrId && a.tipo==="agendado" && dataISO(a.dataHora)===hoje).length;
+          const pct = Math.min((agendosHoje/meta)*100, 100);
+          return (
+            <div className="mt-2">
+              <div className="flex justify-between text-xs text-gray-500 mb-1">
+                <span>Meta de agendamentos hoje</span>
+                <span className={`font-bold ${agendosHoje>=meta?"text-green-600":""}`}>{agendosHoje}/{meta}</span>
+              </div>
+              <div className="h-1.5 bg-gray-100 rounded-full">
+                <div className={`h-1.5 rounded-full ${pct>=100?"bg-green-500":"bg-orange-400"}`} style={{width:`${pct}%`}} />
+              </div>
+              {agendosHoje>=meta && <p className="text-xs text-green-600 font-medium mt-1 text-center">🎉 Meta batida!</p>}
+            </div>
+          );
+        })()}
       </div>
 
-      <div className="flex-1 max-w-lg mx-auto w-full p-4 space-y-3">
+      <div className="flex-1 max-w-4xl mx-auto w-full p-5 space-y-3">
         {proximo ? (
           <BDRTarefa
-            key={proximo.id+"-"+proximo.coluna+"-"+(proximo.tentativas||0)}
+            key={proximo.id+"-"+proximo.coluna+"-"+(proximo.atividadeIndex||0)+"-"+(proximo.tentativas||0)}
             lead={proximo} state={state} save={save}
             onNaoAtendeu={onNaoAtendeu} registrarAcao={registrarAcao}
           />
@@ -634,10 +1058,18 @@ function BDR({ bdrId, state, save, setView }) {
 function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, onTimerZerouContato, onTimerZerouCadastro, state, save, setView }) {
   const tempos = state.config?.tempos || TEMPO_PADRAO;
   const coluna = lead?.coluna;
-  const colunaParaTempo = coluna === "contato_futuro" ? "contato" : coluna;
-  const totalSec = colunaParaTempo
-    ? (tempos[colunaParaTempo]||10)*60
-    : vagasLivres>0 ? (tempos.enriquecimento||10)*60 : 0;
+
+  // Se o lead está em contato, usa o tempo da atividade atual da cadência
+  let totalSec;
+  if (lead && (coluna === "contato" || coluna === "contato_futuro")) {
+    const cadencia = getCadencia(state);
+    const ativ = proximaAtividade(lead, cadencia);
+    totalSec = (ativ?.tempoMin || tempos.contato || 15) * 60;
+  } else if (lead) {
+    totalSec = (tempos[coluna] || 10) * 60;
+  } else {
+    totalSec = vagasLivres > 0 ? (tempos.enriquecimento || 10) * 60 : 0;
+  }
 
   const [seg, setSeg] = useState(totalSec);
   const [pausado, setPausado] = useState(false);
@@ -673,7 +1105,7 @@ function BDRHeader({ bdr, lead, vagasLivres, onPausaChange, onTimerZerouContato,
       });
     }, 1000);
     return () => clearInterval(ref.current);
-  }, [lead?.id, lead?.coluna, totalSec, pausado]);
+  }, [lead?.id, lead?.coluna, lead?.atividadeIndex, totalSec, pausado]);
 
   const togglePausa = () => {
     if (!pausado) {
@@ -769,7 +1201,7 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
         dataContatoFuturo: null,
         historico,
         observacao: "",
-        tentativas: 0, ativo: true,
+        tentativas: 0, ativo: true, atividadeIndex: 0,
         ultimaTentativa: new Date().toISOString(),
       };
       save({ ...state, leads: [...state.leads, novoLead] });
@@ -812,7 +1244,7 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
         dataContatoFuturo: null,
         historico,
         observacao: "",
-        tentativas: 0, ativo: true,
+        tentativas: 0, ativo: true, atividadeIndex: 0,
         ultimaTentativa: new Date().toISOString(),
       };
       save({ ...state, leads: [...state.leads, novoLead] });
@@ -880,182 +1312,333 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
     ...Object.fromEntries(campos.map(c => [c.id, lead[c.id] || ""])),
   });
 
+  const cadencia = getCadencia(state);
+  const atividade = proximaAtividade(lead, cadencia);
+  const canal = atividade ? (CANAIS[atividade.canal] || CANAIS.ligacao) : null;
+  const mensagem = atividade ? aplicarTemplate(atividade.template, lead) : "";
+  const [msgEditavel, setMsgEditavel] = useState(mensagem);
+
+  useEffect(() => { setMsgEditavel(mensagem); }, [lead.id, atividade?.id]);
+
   const atualizarLead = updates => {
     const novoLeads = state.leads.map(l =>
-      l.id===lead.id ? {...l,...updates,dataMovimentacao:new Date().toISOString()} : l
+      l.id === lead.id ? { ...l, ...updates, dataMovimentacao: new Date().toISOString() } : l
     );
-    save({ ...state, leads: novoLeads });
+    save({ ...state, leads: novoLeads, acoes: state.acoes });
   };
 
   const salvarEdicao = () => {
     atualizarLead({ ...formEdit });
     setEditando(false);
-    setFeedback("✓ Lead atualizado");
+    setFeedback("Lead atualizado");
     setTimeout(() => setFeedback(null), 1500);
   };
 
   const adicionarHistorico = texto => {
-    if (!texto.trim()) return lead.historico || [];
+    if (!texto || !texto.trim()) return lead.historico || [];
     return [...(lead.historico||[]), { texto: texto.trim(), dataHora: formatarDataHora() }];
   };
 
+  const copiarMensagem = () => {
+    navigator.clipboard?.writeText(msgEditavel);
+    setFeedback("Mensagem copiada");
+    setTimeout(() => setFeedback(null), 1500);
+  };
+
+  // Registra resultado e SEMPRE avança para outro lead
   const registrarResultado = resultado => {
     const hist = adicionarHistorico(obs);
+    const proxIndex = (lead.atividadeIndex || 0) + 1;
+    const agora = new Date().toISOString();
+    let updates = {};
+    let tipoAcao = "";
+
     if (resultado === "agendado") {
-      atualizarLead({ coluna: "agendado", ativo: false, historico: hist });
-      registrarAcao("agendado", lead.id);
+      updates = { coluna: "agendado", ativo: false, historico: hist };
+      tipoAcao = "agendado";
     } else if (resultado === "sem_interesse") {
-      atualizarLead({ coluna: "nao_agendado", ativo: false, historico: hist });
-      registrarAcao("sem_interesse", lead.id);
-    } else if (resultado === "contato_futuro" && dataFuturo) {
-      atualizarLead({ coluna: "contato_futuro", ativo: false, dataContatoFuturo: dataFuturo, historico: hist });
-      registrarAcao("contato_futuro", lead.id);
+      updates = { coluna: "nao_agendado", ativo: false, historico: hist };
+      tipoAcao = "sem_interesse";
+    } else if (resultado === "contato_futuro") {
+      if (!dataFuturo) {
+        setFeedback("Informe a data de contato futuro");
+        setTimeout(() => setFeedback(null), 2000);
+        return;
+      }
+      updates = { coluna: "contato_futuro", ativo: false, dataContatoFuturo: dataFuturo, historico: hist };
+      tipoAcao = "contato_futuro";
     } else if (resultado === "etapa_realizada") {
-      setFeedback("✓ Etapa registrada");
-      setTimeout(() => setFeedback(null), 1500);
-      atualizarLead({ tentativas: (lead.tentativas||0)+1, historico: hist, ultimaTentativa: new Date().toISOString() });
-      registrarAcao("etapa_realizada", lead.id);
-      onNaoAtendeu(lead.id);
+      updates = { tentativas: (lead.tentativas||0)+1, atividadeIndex: proxIndex, historico: hist, ultimaTentativa: agora };
+      tipoAcao = "etapa_realizada";
     } else if (resultado === "pulou") {
-      setFeedback("⏭ Pulado");
-      setTimeout(() => setFeedback(null), 1500);
-      atualizarLead({ tentativas: (lead.tentativas||0)+1, historico: adicionarHistorico("Pulou a etapa"), ultimaTentativa: new Date().toISOString() });
-      registrarAcao("pulou", lead.id);
-      onNaoAtendeu(lead.id);
+      updates = { tentativas: (lead.tentativas||0)+1, atividadeIndex: proxIndex, historico: adicionarHistorico(obs || "Pulou a etapa"), ultimaTentativa: agora };
+      tipoAcao = "pulou";
     }
+
+    const novoLeads = state.leads.map(l =>
+      l.id === lead.id ? { ...l, ...updates, dataMovimentacao: agora } : l
+    );
+    const novaAcao = { id: uid(), bdrId: lead.bdrId, tipo: tipoAcao, leadId: lead.id, dataHora: agora };
+    save({ ...state, leads: novoLeads, acoes: [...(state.acoes||[]), novaAcao] });
+
+    // Sempre tira o lead do ciclo atual para ir ao próximo
+    onNaoAtendeu(lead.id);
   };
 
   const isContato = lead.coluna === "contato" || lead.coluna === "contato_futuro";
 
   return (
-    <div className="space-y-3 pb-20">
+    <div className="space-y-4 pb-24">
       {feedback && (
-        <div className="fixed top-16 left-0 right-0 z-40 flex justify-center">
-          <div className="bg-gray-900 text-white text-sm font-medium px-5 py-2 rounded-full shadow-lg">{feedback}</div>
+        <div className="fixed top-20 left-0 right-0 z-40 flex justify-center pointer-events-none">
+          <div className="bg-slate-900 text-white text-sm font-medium px-5 py-2.5 rounded-lg shadow-lg">{feedback}</div>
         </div>
       )}
 
-      {/* Lead info */}
-      <div className="bg-white rounded-xl p-4 shadow-sm">
-        <div className="flex items-start justify-between">
+      {/* Card do lead */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
+        <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             {lead.coluna === "contato_futuro" && (
-              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium mb-2 inline-block">Prioridade máxima</span>
+              <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-1 rounded-md font-medium mb-2 inline-block border border-purple-100">
+                Retorno agendado
+              </span>
             )}
-            <p className="font-bold text-gray-900 text-lg">{lead.nome}</p>
-            {lead.empresa && <p className="text-sm text-gray-500">{lead.empresa}</p>}
-            <div className="flex gap-3 mt-2 flex-wrap">
-              {lead.linkedin  && <a href={toUrl(lead.linkedin)}  target="_blank" rel="noreferrer" className="text-blue-600 text-xs hover:underline">LinkedIn ↗</a>}
-              {lead.instagram && <a href={toUrl(lead.instagram)} target="_blank" rel="noreferrer" className="text-pink-500 text-xs hover:underline">Instagram ↗</a>}
-              {lead.site      && <a href={toUrl(lead.site)}      target="_blank" rel="noreferrer" className="text-green-600 text-xs hover:underline">Site ↗</a>}
-              {lead.telefone  && <span className="text-gray-600 text-xs">📞 {lead.telefone}</span>}
-              {lead.email     && <span className="text-gray-600 text-xs">✉️ {lead.email}</span>}
+            <p className="font-bold text-slate-900 text-xl">{lead.nome}</p>
+            {lead.empresa && <p className="text-sm text-slate-500 mt-0.5">{lead.empresa}</p>}
+            <div className="flex gap-2 mt-3 flex-wrap">
+              {lead.telefone && (
+                <a href={`tel:${lead.telefone.replace(/\D/g,"")}`}
+                  className="inline-flex items-center gap-1.5 bg-slate-50 text-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition">
+                  📞 {lead.telefone}
+                </a>
+              )}
+              {lead.email && (
+                <a href={`mailto:${lead.email}`}
+                  className="inline-flex items-center gap-1.5 bg-slate-50 text-slate-700 text-xs px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition">
+                  ✉️ {lead.email}
+                </a>
+              )}
+              {lead.linkedin && (
+                <a href={toUrl(lead.linkedin)} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 bg-sky-50 text-sky-700 text-xs px-3 py-1.5 rounded-lg border border-sky-100 hover:bg-sky-100 transition">
+                  💼 LinkedIn
+                </a>
+              )}
+              {lead.instagram && (
+                <a href={toUrl(lead.instagram)} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 bg-pink-50 text-pink-700 text-xs px-3 py-1.5 rounded-lg border border-pink-100 hover:bg-pink-100 transition">
+                  📷 Instagram
+                </a>
+              )}
+              {lead.site && (
+                <a href={toUrl(lead.site)} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs px-3 py-1.5 rounded-lg border border-emerald-100 hover:bg-emerald-100 transition">
+                  🌐 Site
+                </a>
+              )}
             </div>
             {lead.dataContatoFuturo && (
-              <p className="text-xs text-purple-600 mt-2">📅 Data combinada: {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>
+              <p className="text-xs text-purple-600 mt-3">Data combinada: {new Date(lead.dataContatoFuturo+"T00:00:00").toLocaleDateString("pt-BR")}</p>
             )}
           </div>
           <button onClick={() => setEditando(true)}
-            className="ml-3 shrink-0 text-gray-400 hover:text-blue-600 transition p-1 rounded-lg hover:bg-blue-50"
-            title="Editar informações do lead">
-            ✏️
-          </button>
+            className="shrink-0 text-slate-300 hover:text-slate-900 transition p-2 rounded-lg hover:bg-slate-50"
+            title="Editar lead">✏️</button>
         </div>
       </div>
 
       {/* Modal de edição */}
       {editando && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 z-50 flex items-end justify-center">
-          <div className="bg-white rounded-t-2xl w-full max-w-lg p-5 max-h-screen overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <p className="font-bold text-gray-900">Editar lead</p>
-              <button onClick={() => setEditando(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+        <div className="fixed inset-0 bg-slate-900 bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl w-full max-w-md p-6 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-5">
+              <p className="font-bold text-slate-900">Editar lead</p>
+              <button onClick={() => setEditando(false)} className="text-slate-300 hover:text-slate-600 text-lg">✕</button>
             </div>
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-gray-500 block mb-0.5">Nome *</label>
-                <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                <label className="text-xs text-slate-400 block mb-1">Nome</label>
+                <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
                   value={formEdit.nome||""} onChange={e => setFormEdit({...formEdit, nome: e.target.value})} />
               </div>
               {campos.map(campo => (
                 <div key={campo.id}>
-                  <label className="text-xs text-gray-500 block mb-0.5">{campo.label}</label>
-                  <input className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  <label className="text-xs text-slate-400 block mb-1">{campo.label}</label>
+                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
                     value={formEdit[campo.id]||""} onChange={e => setFormEdit({...formEdit, [campo.id]: e.target.value})} />
                 </div>
               ))}
             </div>
-            <div className="flex gap-3 mt-5">
+            <div className="flex gap-3 mt-6">
               <button onClick={() => setEditando(false)}
-                className="flex-1 border border-gray-200 text-gray-600 py-3 rounded-xl text-sm hover:bg-gray-50">
-                Cancelar
-              </button>
+                className="flex-1 border border-slate-200 text-slate-600 py-2.5 rounded-lg text-sm hover:bg-slate-50">Cancelar</button>
               <button onClick={salvarEdicao}
-                className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-sm font-bold hover:bg-blue-700">
-                Salvar alterações
-              </button>
+                className="flex-1 bg-slate-900 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-slate-800">Salvar</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Histórico */}
-      {lead.historico && lead.historico.length > 0 && (
-        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 shadow-sm">
-          <p className="text-xs text-amber-700 font-medium mb-2">📋 Histórico:</p>
-          <div className="space-y-1.5">
-            {lead.historico.map((item,i) => (
-              <p key={i} className="text-xs text-amber-800">
-                <span className="font-medium">{i+1}ª</span> {item.texto}
-                <span className="text-amber-500 ml-1">({item.dataHora})</span>
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
-
+      {/* Layout duas colunas: roteiro à direita, observações à esquerda */}
       {isContato && (
-        <div className="bg-white rounded-xl p-4 shadow-sm">
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* ESQUERDA — Observações e resultado */}
+          <div className="space-y-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block mb-2">Observações</label>
+              <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm h-32 resize-none focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+                placeholder="O que aconteceu nesta tentativa?"
+                value={obs} onChange={e=>setObs(e.target.value)} />
+              <div className="mt-3">
+                <label className="text-xs text-slate-400 block mb-1">Data para contato futuro (se aplicável)</label>
+                <input type="date" min={new Date().toISOString().split("T")[0]}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none"
+                  value={dataFuturo} onChange={e=>setDataFuturo(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <p className="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wider">Registrar resultado</p>
+              <div className="space-y-2">
+                <button onClick={() => registrarResultado("agendado")}
+                  className="w-full bg-emerald-600 text-white py-3 rounded-lg font-semibold text-sm hover:bg-emerald-700 transition">
+                  Agendou reunião
+                </button>
+                <button onClick={() => registrarResultado("etapa_realizada")}
+                  className="w-full bg-slate-900 text-white py-3 rounded-lg font-semibold text-sm hover:bg-slate-800 transition">
+                  Etapa realizada
+                </button>
+                <button onClick={() => registrarResultado("contato_futuro")}
+                  className={`w-full py-3 rounded-lg font-semibold text-sm transition ${dataFuturo?"bg-purple-600 text-white hover:bg-purple-700":"bg-slate-100 text-slate-400 cursor-not-allowed"}`}>
+                  {dataFuturo ? `Contato futuro — ${new Date(dataFuturo+"T00:00:00").toLocaleDateString("pt-BR")}` : "Contato futuro (informe a data)"}
+                </button>
+                <button onClick={() => registrarResultado("sem_interesse")}
+                  className="w-full bg-white border border-red-200 text-red-600 py-3 rounded-lg font-semibold text-sm hover:bg-red-50 transition">
+                  Sem interesse
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* DIREITA — Roteiro / canal */}
           <div>
-            <label className="text-xs text-gray-500 block mb-1">Observação</label>
-            <textarea className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm h-14 resize-none"
-              placeholder="O que aconteceu nesta tentativa?"
-              value={obs} onChange={e=>setObs(e.target.value)} />
-          </div>
-          <div className="mt-2">
-            <label className="text-xs text-gray-500 block mb-1">Data para contato futuro (se aplicável)</label>
-            <input type="date" min={new Date().toISOString().split("T")[0]}
-              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
-              value={dataFuturo} onChange={e=>setDataFuturo(e.target.value)} />
-          </div>
-        </div>
-      )}
+            {atividade && canal ? (
+              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden sticky top-20">
+                <div className={`${canal.cor} px-5 py-4`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xl">{canal.icone}</span>
+                      <div>
+                        <p className="text-white font-bold text-sm">{canal.label}</p>
+                        <p className="text-white text-xs opacity-75">
+                          Etapa {atividade.index + 1} de {cadencia.atividades.length}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-white text-xs bg-white bg-opacity-20 px-2.5 py-1 rounded-md font-medium">
+                      {atividade.tempoMin} min
+                    </span>
+                  </div>
+                </div>
 
-      {isContato && (
-        <div className="bg-white rounded-xl p-4 shadow-sm">
-          <p className="text-xs font-semibold text-gray-700 mb-3 uppercase tracking-wide">Registrar resultado</p>
-          <div className="space-y-2">
-            <button onClick={() => registrarResultado("agendado")}
-              className="w-full bg-green-500 text-white py-3 rounded-xl font-bold hover:bg-green-600">✅ Agendou reunião</button>
-            <button onClick={() => registrarResultado("etapa_realizada")}
-              className="w-full bg-yellow-500 text-white py-3 rounded-xl font-bold hover:bg-yellow-600">✓ Etapa realizada</button>
-            {dataFuturo && (
-              <button onClick={() => registrarResultado("contato_futuro")}
-                className="w-full bg-purple-500 text-white py-3 rounded-xl font-bold hover:bg-purple-600">
-                📅 Contato futuro — {new Date(dataFuturo+"T00:00:00").toLocaleDateString("pt-BR")}
-              </button>
+                <div className="p-5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                    {atividade.canal === "ligacao" ? "Roteiro da ligação" : "Mensagem"}
+                  </p>
+
+                  {atividade.canal === "ligacao" ? (
+                    <div className="bg-slate-50 border border-slate-100 rounded-lg p-4 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap min-h-[120px]">
+                      {msgEditavel || "Nenhum roteiro configurado para esta etapa."}
+                    </div>
+                  ) : (
+                    <textarea className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm h-36 resize-none focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+                      value={msgEditavel} onChange={e => setMsgEditavel(e.target.value)} />
+                  )}
+
+                  <div className="mt-4 space-y-2">
+                    {atividade.canal === "ligacao" && lead.telefone && (
+                      <a href={`tel:${lead.telefone.replace(/\D/g,"")}`}
+                        className="block w-full bg-blue-600 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-blue-700 transition">
+                        Ligar agora
+                      </a>
+                    )}
+                    {atividade.canal === "whatsapp" && lead.telefone && (
+                      <a href={toWhatsApp(lead.telefone, msgEditavel)} target="_blank" rel="noreferrer"
+                        className="block w-full bg-green-600 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-green-700 transition">
+                        Abrir WhatsApp
+                      </a>
+                    )}
+                    {atividade.canal === "email" && lead.email && (
+                      <a href={`mailto:${lead.email}?body=${encodeURIComponent(msgEditavel)}`}
+                        className="block w-full bg-orange-500 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-orange-600 transition">
+                        Abrir e-mail
+                      </a>
+                    )}
+                    {atividade.canal === "linkedin" && lead.linkedin && (
+                      <a href={toUrl(lead.linkedin)} target="_blank" rel="noreferrer"
+                        className="block w-full bg-sky-700 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-sky-800 transition">
+                        Abrir LinkedIn
+                      </a>
+                    )}
+                    {atividade.canal === "instagram" && lead.instagram && (
+                      <a href={toUrl(lead.instagram)} target="_blank" rel="noreferrer"
+                        className="block w-full bg-pink-600 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-pink-700 transition">
+                        Abrir Instagram
+                      </a>
+                    )}
+                    {atividade.canal === "facebook" && (
+                      <a href={lead.facebook ? toUrl(lead.facebook) : "https://facebook.com"} target="_blank" rel="noreferrer"
+                        className="block w-full bg-blue-800 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-blue-900 transition">
+                        Abrir Facebook
+                      </a>
+                    )}
+                    {atividade.canal === "tiktok" && (
+                      <a href={lead.tiktok ? toUrl(lead.tiktok) : "https://tiktok.com"} target="_blank" rel="noreferrer"
+                        className="block w-full bg-neutral-900 text-white text-center py-3 rounded-lg font-semibold text-sm hover:bg-neutral-800 transition">
+                        Abrir TikTok
+                      </a>
+                    )}
+                    {atividade.canal !== "ligacao" && (
+                      <button onClick={copiarMensagem}
+                        className="w-full border border-slate-200 text-slate-600 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-50 transition">
+                        Copiar mensagem
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 text-center">
+                <p className="text-sm text-slate-600 font-medium">Cadência concluída</p>
+                <p className="text-xs text-slate-400 mt-1">Todas as etapas foram executadas. Registre o resultado final.</p>
+              </div>
             )}
-            <button onClick={() => registrarResultado("sem_interesse")}
-              className="w-full bg-red-500 text-white py-3 rounded-xl font-bold hover:bg-red-600">✗ Sem interesse</button>
+
+            {/* Histórico */}
+            {lead.historico && lead.historico.length > 0 && (
+              <div className="bg-white rounded-xl border border-slate-200 p-5 mt-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Histórico</p>
+                <div className="space-y-2">
+                  {lead.historico.map((item,i) => (
+                    <div key={i} className="text-xs text-slate-600 pb-2 border-b border-slate-50 last:border-0">
+                      <span className="font-semibold text-slate-400">{i+1}.</span> {item.texto}
+                      <span className="text-slate-300 ml-1.5">{item.dataHora}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
 
+      {/* Barra fixa inferior */}
       {isContato && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t shadow-lg">
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-5 py-3">
           <button onClick={() => registrarResultado("pulou")}
-            className="w-full max-w-lg mx-auto block border-2 border-gray-200 text-gray-500 py-3 rounded-xl font-medium text-sm hover:bg-gray-50 transition">
-            Pular para a próxima tarefa →
+            className="w-full max-w-md mx-auto block border border-slate-200 text-slate-500 py-2.5 rounded-lg font-medium text-sm hover:bg-slate-50 transition">
+            Pular para a próxima tarefa
           </button>
         </div>
       )}
