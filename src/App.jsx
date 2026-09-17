@@ -64,6 +64,15 @@ function toUrl(val) {
   return val.startsWith("http://") || val.startsWith("https://") ? val : "https://" + val;
 }
 
+function mascaraTelefone(valor) {
+  const nums = valor.replace(/\D/g, "").slice(0, 11);
+  if (!nums.length) return "";
+  if (nums.length <= 2) return `(${nums}`;
+  if (nums.length <= 6) return `(${nums.slice(0,2)}) ${nums.slice(2)}`;
+  if (nums.length <= 10) return `(${nums.slice(0,2)}) ${nums.slice(2,6)}-${nums.slice(6)}`;
+  return `(${nums.slice(0,2)}) ${nums.slice(2,7)}-${nums.slice(7)}`;
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -1241,6 +1250,9 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
     campos.filter(c => c.obrigatorio).forEach(c => {
       if (!form[c.id]?.trim()) novosErros[c.id] = true;
     });
+    if (form.email?.trim() && !form.email.includes("@")) novosErros.email = "formato";
+    if (form.linkedin?.trim() && !/^https?:\/\//i.test(form.linkedin)) novosErros.linkedin = "url";
+    if (form.instagram?.trim() && !/^https?:\/\//i.test(form.instagram)) novosErros.instagram = "url";
     setErros(novosErros);
     return Object.keys(novosErros).length === 0;
   };
@@ -1303,9 +1315,20 @@ function BDRCadastrarLead({ bdrId, state, save, iniciarAberto = false, onCadastr
         {campos.map(campo => (
           <div key={campo.id}>
             <label className="text-xs text-gray-500 block mb-0.5">{campo.label}{campo.obrigatorio?" *":""}</label>
-            <input className={`w-full border rounded-lg px-3 py-2 text-sm ${erros[campo.id]?"border-red-400 bg-red-50":"border-gray-200"}`}
-              value={form[campo.id]||""} onChange={e=>setForm({...form,[campo.id]:e.target.value})} />
-            {erros[campo.id] && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
+            <input
+              className={`w-full border rounded-lg px-3 py-2 text-sm ${erros[campo.id]?"border-red-400 bg-red-50":"border-gray-200"}`}
+              type={campo.id === "email" ? "email" : campo.id === "linkedin" || campo.id === "instagram" || campo.id === "site" ? "url" : "text"}
+              placeholder={campo.id === "linkedin" || campo.id === "instagram" || campo.id === "site" ? "https://" : campo.id === "telefone" ? "(00) 00000-0000" : campo.id === "email" ? "exemplo@email.com" : ""}
+              inputMode={campo.id === "telefone" ? "numeric" : undefined}
+              value={form[campo.id]||""}
+              onChange={e => {
+                const val = campo.id === "telefone" ? mascaraTelefone(e.target.value) : e.target.value;
+                setForm({...form,[campo.id]:val});
+              }}
+            />
+            {erros[campo.id] === true && <p className="text-xs text-red-500 mt-0.5">Campo obrigatório</p>}
+            {erros[campo.id] === "formato" && <p className="text-xs text-red-500 mt-0.5">Informe um e-mail válido com @</p>}
+            {erros[campo.id] === "url" && <p className="text-xs text-red-500 mt-0.5">Informe a URL completa (ex: https://...)</p>}
           </div>
         ))}
         <div>
@@ -1450,7 +1473,7 @@ Responda APENAS com um JSON válido, sem markdown, sem preâmbulo, neste formato
                 <p className="text-xs text-slate-700">{resumo.proximoPasso}</p>
               </div>
             )}
-            <button onClick={() => onResumo(resumo.resumo)}
+            <button onClick={() => onResumo(resumo.resumo, resumo)}
               className="w-full border border-slate-200 text-slate-600 py-2 rounded-lg text-xs font-medium hover:bg-slate-50 transition">
               Usar como observação
             </button>
@@ -1466,6 +1489,7 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
   const [dataFuturo, setDataFuturo] = useState("");
   const [feedback, setFeedback] = useState(null);
   const [editando, setEditando] = useState(false);
+  const [resumoIA, setResumoIA] = useState(null);
 
   const campos = (state.config?.camposEnriquecimento || CAMPOS_PADRAO).filter(c => c.ativo);
   const [formEdit, setFormEdit] = useState({
@@ -1495,9 +1519,11 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
     setTimeout(() => setFeedback(null), 1500);
   };
 
-  const adicionarHistorico = texto => {
-    if (!texto || !texto.trim()) return lead.historico || [];
-    return [...(lead.historico||[]), { texto: texto.trim(), dataHora: formatarDataHora() }];
+  const adicionarHistorico = (texto, resumo) => {
+    const entrada = { texto: texto?.trim() || "", dataHora: formatarDataHora(), canal: atividade?.canal };
+    if (resumo) entrada.resumoIA = resumo;
+    if (!entrada.texto && !resumo) return lead.historico || [];
+    return [...(lead.historico||[]), entrada];
   };
 
   const copiarMensagem = () => {
@@ -1508,7 +1534,7 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
 
   // Registra resultado e SEMPRE avança para outro lead
   const registrarResultado = resultado => {
-    const hist = adicionarHistorico(obs);
+    const hist = adicionarHistorico(obs, atividade?.canal === "ligacao" ? resumoIA : null);
     const proxIndex = (lead.atividadeIndex || 0) + 1;
     const agora = new Date().toISOString();
     let updates = {};
@@ -1634,8 +1660,17 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
               {campos.map(campo => (
                 <div key={campo.id}>
                   <label className="text-xs text-slate-400 block mb-1">{campo.label}</label>
-                  <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
-                    value={formEdit[campo.id]||""} onChange={e => setFormEdit({...formEdit, [campo.id]: e.target.value})} />
+                  <input
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent"
+                    type={campo.id === "email" ? "email" : campo.id === "linkedin" || campo.id === "instagram" || campo.id === "site" ? "url" : "text"}
+                    placeholder={campo.id === "linkedin" || campo.id === "instagram" || campo.id === "site" ? "https://" : campo.id === "telefone" ? "(00) 00000-0000" : campo.id === "email" ? "exemplo@email.com" : ""}
+                    inputMode={campo.id === "telefone" ? "numeric" : undefined}
+                    value={formEdit[campo.id]||""}
+                    onChange={e => {
+                      const val = campo.id === "telefone" ? mascaraTelefone(e.target.value) : e.target.value;
+                      setFormEdit({...formEdit, [campo.id]: val});
+                    }}
+                  />
                 </div>
               ))}
             </div>
@@ -1792,7 +1827,7 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
             {/* Painel de IA — só em ligações */}
             {atividade && atividade.canal === "ligacao" && (
               <div className="mt-4">
-                <PainelIALigacao lead={lead} onResumo={(txt) => setObs(o => o ? o + "\n" + txt : txt)} />
+                <PainelIALigacao lead={lead} onResumo={(txt, resumo) => { setObs(o => o ? o + "\n" + txt : txt); setResumoIA(resumo); }} />
               </div>
             )}
 
@@ -1803,8 +1838,25 @@ function BDRTarefa({ lead, state, save, onNaoAtendeu, registrarAcao }) {
                 <div className="space-y-2">
                   {lead.historico.map((item,i) => (
                     <div key={i} className="text-xs text-slate-600 pb-2 border-b border-slate-50 last:border-0">
-                      <span className="font-semibold text-slate-400">{i+1}.</span> {item.texto}
-                      <span className="text-slate-300 ml-1.5">{item.dataHora}</span>
+                      <div>
+                        <span className="font-semibold text-slate-400">{i+1}.</span>
+                        {item.canal && CANAIS[item.canal] && (
+                          <span className="ml-1 text-slate-400">{CANAIS[item.canal].icone}</span>
+                        )}
+                        {item.texto && <span className="ml-1">{item.texto}</span>}
+                        <span className="text-slate-300 ml-1.5">{item.dataHora}</span>
+                      </div>
+                      {item.resumoIA && (
+                        <div className="mt-1.5 ml-4 p-2 bg-slate-50 rounded-md border border-slate-100">
+                          <p className="text-xs font-semibold text-slate-400 mb-0.5">Resumo da ligação</p>
+                          <p className="text-xs text-slate-600 leading-relaxed">{item.resumoIA.resumo || item.resumoIA}</p>
+                          {item.resumoIA.temperatura && (
+                            <span className={`inline-block mt-1 text-xs px-1.5 py-0.5 rounded font-medium ${item.resumoIA.temperatura === "quente" ? "bg-red-50 text-red-600" : item.resumoIA.temperatura === "morno" ? "bg-amber-50 text-amber-600" : "bg-sky-50 text-sky-600"}`}>
+                              {item.resumoIA.temperatura}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
